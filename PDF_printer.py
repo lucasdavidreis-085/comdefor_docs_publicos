@@ -41,6 +41,8 @@ DEFAULT_OUTPUT_DIR = APP_DIR / "capturas"
 DEFAULT_BRANCH = "main"
 MAX_GITHUB_FILE_BYTES = 95 * 1024 * 1024
 CAPTURE_LOCK = threading.Lock()
+GITHUB_AUTH_LOCK = threading.Lock()
+GITHUB_AUTH_STATE: dict[str, Any] = {"running": False, "message": "", "device_code": ""}
 
 
 class CaptureError(RuntimeError):
@@ -610,6 +612,89 @@ def github_cli_token() -> str:
         return ""
 
 
+def github_cli_account() -> str:
+    """Retorna somente o login da conta ativa no GitHub CLI."""
+    try:
+        completed = subprocess.run(
+            ["gh", "api", "user", "--jq", ".login"],
+            capture_output=True,
+            check=True,
+            text=True,
+            timeout=10,
+        )
+        login = completed.stdout.strip()
+        return login if re.fullmatch(r"[A-Za-z0-9-]+", login) else ""
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def start_github_login() -> dict[str, str | bool]:
+    """Inicia a autorização web do GitHub CLI sem revelar tokens no aplicativo."""
+    with GITHUB_AUTH_LOCK:
+        if GITHUB_AUTH_STATE["running"]:
+            return dict(GITHUB_AUTH_STATE)
+        GITHUB_AUTH_STATE.update(
+            running=True,
+            message="Abrindo a autorização do GitHub no navegador…",
+            device_code="",
+        )
+
+    def login_worker() -> None:
+        output: list[str] = []
+        try:
+            options: dict[str, Any] = {
+                "stdout": subprocess.PIPE,
+                "stderr": subprocess.STDOUT,
+                "text": True,
+                "encoding": "utf-8",
+                "errors": "replace",
+            }
+            if os.name == "nt":
+                options["creationflags"] = subprocess.CREATE_NO_WINDOW
+            process = subprocess.Popen(
+                [
+                    "gh",
+                    "auth",
+                    "login",
+                    "--hostname",
+                    "github.com",
+                    "--web",
+                    "--git-protocol",
+                    "https",
+                    "--skip-ssh-key",
+                ],
+                **options,
+            )
+            assert process.stdout is not None
+            for line in process.stdout:
+                output.append(line)
+                match = re.search(r"\b[A-Z0-9]{4}-[A-Z0-9]{4}\b", line)
+                if match:
+                    with GITHUB_AUTH_LOCK:
+                        GITHUB_AUTH_STATE["device_code"] = match.group(0)
+                        GITHUB_AUTH_STATE["message"] = "Informe este código na página aberta do GitHub."
+            exit_code = process.wait()
+            account = github_cli_account()
+            message = (
+                f"Conta @{account} conectada." if exit_code == 0 and account
+                else "A conexão não foi concluída. Tente novamente."
+            )
+        except OSError:
+            message = "Não foi possível iniciar o GitHub CLI nesta máquina."
+        with GITHUB_AUTH_LOCK:
+            GITHUB_AUTH_STATE.update(running=False, message=message, device_code="")
+
+    threading.Thread(target=login_worker, daemon=True).start()
+    return dict(GITHUB_AUTH_STATE)
+
+
+def github_auth_status() -> dict[str, str | bool]:
+    with GITHUB_AUTH_LOCK:
+        state = dict(GITHUB_AUTH_STATE)
+    state["account"] = github_cli_account()
+    return state
+
+
 def connected_github_repository() -> str:
     """Sugere o repositório remoto desta cópia do aplicativo, se houver um."""
     configured = os.environ.get("PDF_PRINTER_GITHUB_REPOSITORY", "").strip()
@@ -720,7 +805,8 @@ HTML_TEMPLATE = """<!doctype html>
   <style>
     :root { color-scheme: light; --ink:#18212f; --muted:#5d6879; --accent:#0b67c2; --line:#d9e0e9; --soft:#f4f8fc; --danger:#a31d2c; }
     * { box-sizing:border-box; } body { margin:0; color:var(--ink); background:#eef3f8; font:16px/1.5 system-ui,-apple-system,Segoe UI,sans-serif; }
-    main { width:min(900px,calc(100% - 32px)); margin:48px auto; } h1 { margin:0 0 8px; font-size:clamp(1.7rem,4vw,2.4rem); } .lead { margin:0 0 28px; color:var(--muted); }
+    main { width:min(900px,calc(100% - 32px)); margin:32px auto 48px; } h1 { margin:0 0 8px; font-size:clamp(1.35rem,3vw,1.75rem); } .lead { margin:0 0 28px; color:var(--muted); }
+    .github-header { display:flex; align-items:center; justify-content:space-between; gap:16px; margin-bottom:28px; padding:12px 15px; background:#24292f; color:#fff; border-radius:11px; } .github-brand,.github-account { display:flex; align-items:center; gap:9px; } .github-brand { font-size:1.05rem; font-weight:750; } .github-mark { width:25px; height:25px; fill:currentColor; } .github-account { flex-wrap:wrap; justify-content:flex-end; color:#d0d7de; font-size:.9rem; } .github-account a { color:#fff; font-weight:700; text-decoration:none; } .account-dot { width:8px; height:8px; border-radius:50%; background:#3fb950; } .account-dot.off { background:#8c959f; } .github-button { margin:0; padding:7px 10px; background:#57606a; font-size:.8rem; } .github-button:hover { background:#6e7781; } .github-login-status { width:100%; color:#d0d7de; text-align:right; font-size:.78rem; }
     .card { background:#fff; border:1px solid var(--line); border-radius:14px; padding:28px; box-shadow:0 10px 30px #35516e14; } label { display:block; font-weight:650; margin:18px 0 7px; } label:first-child { margin-top:0; }
     input { width:100%; border:1px solid #aab8c8; border-radius:8px; font:inherit; padding:11px 12px; } input:focus { outline:3px solid #bcdcff; border-color:var(--accent); }
     .grid { display:grid; grid-template-columns:2fr 1fr; gap:16px; } .advanced { margin-top:24px; padding-top:4px; border-top:1px solid var(--line); }
@@ -728,10 +814,22 @@ HTML_TEMPLATE = """<!doctype html>
     button { margin-top:24px; border:0; border-radius:8px; color:white; background:var(--accent); padding:12px 18px; font:700 16px system-ui; cursor:pointer; } button[disabled] { cursor:wait; opacity:.65; }
     #result { margin-top:24px; border-radius:10px; padding:15px 17px; display:none; } #result.ok { display:block; background:#e9f7ef; border:1px solid #a9dbba; } #result.error { display:block; color:#731722; background:#fff0f1; border:1px solid #f0b9be; } #result a { color:#0758a8; font-weight:650; }
     .notice { margin-top:24px; color:#4e5e70; font-size:.9rem; } code { background:#e9eef4; padding:2px 5px; border-radius:4px; }
-    @media(max-width:600px) { main { margin:24px auto; } .card { padding:20px; } .grid { grid-template-columns:1fr; gap:0; } }
+    @media(max-width:600px) { main { margin:20px auto; } .github-header { align-items:flex-start; flex-direction:column; } .github-account { justify-content:flex-start; } .github-login-status { text-align:left; } .card { padding:20px; } .grid { grid-template-columns:1fr; gap:0; } }
   </style>
 </head>
 <body><main>
+  <header class="github-header">
+    <div class="github-brand" aria-label="GitHub">
+      <svg class="github-mark" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0a8 8 0 0 0-2.53 15.59c.4.07.55-.17.55-.38l-.01-1.49c-2.01.44-2.43-.85-2.43-.85-.33-.84-.8-1.06-.8-1.06-.55-.38.04-.37.04-.37.61.04.93.63.93.63.54.93 1.42.66 1.77.5.05-.4.21-.66.38-.81-1.61-.18-3.3-.81-3.3-3.59 0-.79.28-1.44.74-1.95-.07-.18-.32-.92.07-1.92 0 0 .6-.19 1.98.74A6.86 6.86 0 0 1 8 1.8c.61 0 1.23.08 1.81.24 1.37-.93 1.98-.74 1.98-.74.39 1 .14 1.74.07 1.92.46.51.74 1.16.74 1.95 0 2.79-1.7 3.4-3.31 3.58.21.18.39.52.39 1.05l-.01 1.55c0 .21.14.46.55.38A8 8 0 0 0 8 0Z"/></svg>
+      <span>GitHub</span>
+    </div>
+    <div class="github-account">
+      <span id="account-dot" class="account-dot{% if not github_account %} off{% endif %}"></span>
+      <span id="github-account-label">{% if github_account %}Conectado como <a href="https://github.com/{{ github_account }}" target="_blank" rel="noopener">@{{ github_account }}</a>{% else %}Nenhuma conta conectada{% endif %}</span>
+      <button id="github-login" class="github-button" type="button">Conectar/trocar conta</button>
+      <span id="github-login-status" class="github-login-status" hidden></span>
+    </div>
+  </header>
   <h1>Captura técnica de página</h1>
   <p class=\"lead\">Gera PDF com a página integral paginada, anexos verificáveis e captura do player no tempo indicado em links do YouTube.</p>
   <form id=\"capture-form\" class=\"card\">
@@ -742,7 +840,7 @@ HTML_TEMPLATE = """<!doctype html>
     <input id=\"label\" name=\"label\" maxlength=\"70\" placeholder=\"Ex.: prova-video-audiencia\">
     <div class=\"advanced\">
       <label class=\"toggle\"><input id=\"publish\" name=\"publish\" type=\"checkbox\"> Publicar os artefatos em um repositório público do GitHub</label>
-      <p class=\"hint\">A senha/token não é gravada. É necessário um token fine-grained com <em>Contents: Read and write</em> no repositório.</p>
+      <p class=\"hint\">A senha/token não é gravada. Use a conta exibida no cabeçalho ou informe um token fine-grained com <em>Contents: Read and write</em>.</p>
       <div id=\"github-fields\" hidden>
         <div class=\"grid\">
           <div><label for=\"repository\">Repositório público</label><input id=\"repository\" name=\"repository\" value=\"{{ github_repository }}\" placeholder=\"usuario/capturas-provas\"></div>
@@ -760,6 +858,26 @@ HTML_TEMPLATE = """<!doctype html>
 <script>
   const publish = document.querySelector('#publish'), fields = document.querySelector('#github-fields');
   publish.addEventListener('change', () => fields.hidden = !publish.checked);
+  const githubButton = document.querySelector('#github-login'), githubLabel = document.querySelector('#github-account-label'), githubDot = document.querySelector('#account-dot'), githubStatus = document.querySelector('#github-login-status');
+  function showGithubAccount(state) {
+    githubLabel.replaceChildren();
+    if (state.account) {
+      githubDot.classList.remove('off');
+      githubLabel.append('Conectado como ');
+      const link = document.createElement('a'); link.href = `https://github.com/${encodeURIComponent(state.account)}`; link.target = '_blank'; link.rel = 'noopener'; link.textContent = `@${state.account}`; githubLabel.append(link);
+    } else { githubDot.classList.add('off'); githubLabel.textContent = 'Nenhuma conta conectada'; }
+  }
+  async function refreshGithubLogin() {
+    const response = await fetch('/api/github/auth'); const state = await response.json(); showGithubAccount(state);
+    if (state.running) { githubStatus.hidden = false; githubStatus.textContent = state.device_code ? `${state.message} Código: ${state.device_code}` : state.message; window.setTimeout(refreshGithubLogin, 1800); }
+    else if (githubStatus.hidden === false) { githubStatus.textContent = state.message; window.setTimeout(() => { githubStatus.hidden = true; }, 6000); }
+  }
+  githubButton.addEventListener('click', async () => {
+    githubButton.disabled = true; githubStatus.hidden = false; githubStatus.textContent = 'Iniciando autorização…';
+    try { await fetch('/api/github/login', { method:'POST' }); await refreshGithubLogin(); }
+    catch (_) { githubStatus.textContent = 'Não foi possível iniciar a conexão com o GitHub.'; }
+    finally { window.setTimeout(() => { githubButton.disabled = false; }, 1500); }
+  });
   const form = document.querySelector('#capture-form'), submit = document.querySelector('#submit'), result = document.querySelector('#result');
   form.addEventListener('submit', async (event) => {
     event.preventDefault(); submit.disabled = true; submit.textContent = 'Capturando página…'; result.className = ''; result.style.display = 'none';
@@ -786,7 +904,16 @@ def make_app(output_root: Path = DEFAULT_OUTPUT_DIR) -> Flask:
         return render_template_string(
             HTML_TEMPLATE,
             github_repository=connected_github_repository(),
+            github_account=github_cli_account(),
         )
+
+    @application.get("/api/github/auth")
+    def api_github_auth():
+        return jsonify(github_auth_status())
+
+    @application.post("/api/github/login")
+    def api_github_login():
+        return jsonify(start_github_login())
 
     @application.post("/api/captures")
     def api_capture():
