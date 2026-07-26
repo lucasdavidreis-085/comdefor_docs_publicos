@@ -15,6 +15,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import threading
 import urllib.error
 import urllib.parse
@@ -26,7 +27,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any
 
-from flask import Flask, jsonify, render_template_string, request, send_from_directory, url_for
+from flask import Flask, jsonify, render_template_string, request, send_file, send_from_directory, url_for
 from PIL import Image, ImageOps
 from playwright.sync_api import Page, sync_playwright
 from pypdf import PdfReader, PdfWriter
@@ -568,7 +569,7 @@ def github_api_request(
     path: str,
     token: str,
     payload: dict[str, Any] | None = None,
-) -> dict[str, Any]:
+) -> Any:
     body = json.dumps(payload).encode("utf-8") if payload is not None else None
     request_object = urllib.request.Request(
         f"https://api.github.com{path}",
@@ -695,6 +696,109 @@ def github_auth_status() -> dict[str, str | bool]:
     return state
 
 
+def github_cli_logout() -> bool:
+    """Remove a sessão ativa somente depois de o usuário confirmar o comando na interface."""
+    account = github_cli_account()
+    if not account:
+        return True
+    try:
+        subprocess.run(
+            ["gh", "auth", "logout", "--hostname", "github.com", "--user", account],
+            capture_output=True,
+            check=True,
+            text=True,
+            timeout=20,
+        )
+        return True
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def github_repository_name(value: str) -> str:
+    repository = value.strip()
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
+        raise GitHubPublishError("Escolha um repositório válido no GitHub.")
+    return repository
+
+
+def available_github_repositories() -> list[dict[str, Any]]:
+    """Lista até 100 repositórios aos quais a conta ativa pode gravar ou visualizar."""
+    token = github_cli_token()
+    if not token:
+        return []
+    payload = github_api_request(
+        "GET",
+        "/user/repos?affiliation=owner%2Ccollaborator%2Corganization_member&sort=updated&per_page=100",
+        token,
+    )
+    if not isinstance(payload, list):
+        return []
+    repositories = []
+    for item in payload:
+        name = item.get("full_name", "")
+        can_write = bool((item.get("permissions") or {}).get("push"))
+        if re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", name) and not item.get("archived") and can_write:
+            repositories.append(
+                {
+                    "full_name": name,
+                    "private": bool(item.get("private")),
+                    "description": item.get("description") or "",
+                    "default_branch": item.get("default_branch") or DEFAULT_BRANCH,
+                    "html_url": item.get("html_url") or f"https://github.com/{name}",
+                }
+            )
+    return repositories
+
+
+def github_documents(repository: str) -> list[dict[str, str]]:
+    """Retorna os PDFs de captura já preservados em capturas/ no repositório selecionado."""
+    repository = github_repository_name(repository)
+    token = github_cli_token()
+    if not token:
+        raise GitHubPublishError("Conecte uma conta do GitHub para consultar os documentos.")
+    repo_info = github_api_request("GET", f"/repos/{repository}", token)
+    branch = repo_info.get("default_branch") or DEFAULT_BRANCH
+    branch_ref = urllib.parse.quote(branch, safe="")
+    tree = github_api_request(
+        "GET",
+        f"/repos/{repository}/git/trees/{branch_ref}?recursive=1",
+        token,
+    )
+    documents = []
+    for item in tree.get("tree", []):
+        path = item.get("path", "")
+        if item.get("type") == "blob" and re.fullmatch(r"capturas/[^/]+/captura_consolidada\.pdf", path):
+            capture_id = path.split("/")[1]
+            documents.append({"capture_id": capture_id, "path": path})
+    return sorted(documents, key=lambda item: item["capture_id"], reverse=True)
+
+
+def github_document_bytes(repository: str, path: str) -> bytes:
+    repository = github_repository_name(repository)
+    if not re.fullmatch(r"capturas/[^/]+/captura_consolidada\.pdf", path):
+        raise GitHubPublishError("O documento solicitado não é uma captura válida.")
+    token = github_cli_token()
+    if not token:
+        raise GitHubPublishError("Conecte uma conta do GitHub para baixar o documento.")
+    api_path = f"/repos/{repository}/contents/{urllib.parse.quote(path, safe='/')}"
+    request_object = urllib.request.Request(
+        f"https://api.github.com{api_path}",
+        headers={
+            "Accept": "application/vnd.github.raw+json",
+            "Authorization": f"Bearer {token}",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": "PDF-printer",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request_object, timeout=90) as response:
+            return response.read()
+    except urllib.error.HTTPError as error:
+        raise GitHubPublishError(f"GitHub respondeu HTTP {error.code} ao baixar o documento.") from error
+    except urllib.error.URLError as error:
+        raise GitHubPublishError(f"Não foi possível baixar o documento: {error.reason}") from error
+
+
 def connected_github_repository() -> str:
     """Sugere o repositório remoto desta cópia do aplicativo, se houver um."""
     configured = os.environ.get("PDF_PRINTER_GITHUB_REPOSITORY", "").strip()
@@ -722,10 +826,8 @@ def publish_capture_to_github(
     token: str | None = None,
 ) -> str:
     """Cria um único commit contendo todos os artefatos da captura em repositório público."""
-    repository = repository.strip()
+    repository = github_repository_name(repository)
     branch = branch.strip() or DEFAULT_BRANCH
-    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
-        raise GitHubPublishError("Informe o repositório no formato proprietario/repositorio.")
     token = (token or os.environ.get("GITHUB_TOKEN") or github_cli_token()).strip()
     if not token:
         raise GitHubPublishError(
@@ -734,9 +836,6 @@ def publish_capture_to_github(
         )
 
     repo_info = github_api_request("GET", f"/repos/{repository}", token)
-    if repo_info.get("private"):
-        raise GitHubPublishError("O repositório indicado é privado; escolha um repositório público.")
-
     ref_path = urllib.parse.quote(branch, safe="")
     ref = github_api_request("GET", f"/repos/{repository}/git/ref/heads/{ref_path}", token)
     parent_commit = ref["object"]["sha"]
@@ -814,6 +913,7 @@ HTML_TEMPLATE = """<!doctype html>
     button { margin-top:24px; border:0; border-radius:8px; color:white; background:var(--accent); padding:12px 18px; font:700 16px system-ui; cursor:pointer; } button[disabled] { cursor:wait; opacity:.65; }
     #result { margin-top:24px; border-radius:10px; padding:15px 17px; display:none; } #result.ok { display:block; background:#e9f7ef; border:1px solid #a9dbba; } #result.error { display:block; color:#731722; background:#fff0f1; border:1px solid #f0b9be; } #result a { color:#0758a8; font-weight:650; }
     .notice { margin-top:24px; color:#4e5e70; font-size:.9rem; } code { background:#e9eef4; padding:2px 5px; border-radius:4px; }
+    .danger-button { margin:0; padding:7px 10px; color:#ffb4b4; background:transparent; border:1px solid #6e3b3b; font-size:.8rem; } .panel-head { display:flex; align-items:center; justify-content:space-between; gap:12px; } .panel-head h2 { margin:0; font-size:1.05rem; } .minor-button { margin:0; padding:7px 10px; color:#253247; background:#e9eef5; font-size:.8rem; } .repository-list,.document-list { display:grid; gap:9px; margin-top:16px; max-height:310px; overflow:auto; padding-right:3px; } .repository { display:flex; align-items:center; justify-content:space-between; gap:12px; width:100%; margin:0; padding:11px 12px; color:var(--ink); background:#fff; border:1px solid var(--line); text-align:left; } .repository:hover,.repository.selected { border-color:var(--accent); background:#f0f7ff; } .repo-name { font-weight:750; } .repo-description { display:block; color:var(--muted); font-size:.82rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:560px; } .visibility { flex:0 0 auto; border-radius:99px; background:#ddf4ff; color:#0550ae; padding:2px 7px; font-size:.75rem; } .visibility.private { background:#fff1e5; color:#9a6700; } .selected-repository { margin:18px 0 0; padding:11px 12px; border-left:4px solid #8c959f; background:#f6f8fa; color:#4b5565; } .selected-repository.active { border-color:var(--accent); color:#172033; } .document { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:10px 0; border-bottom:1px solid #eaeef2; } .document:last-child { border-bottom:0; } .document small { display:block; color:var(--muted); } .download { color:#0550ae; font-weight:700; text-decoration:none; white-space:nowrap; }
     @media(max-width:600px) { main { margin:20px auto; } .github-header { align-items:flex-start; flex-direction:column; } .github-account { justify-content:flex-start; } .github-login-status { text-align:left; } .card { padding:20px; } .grid { grid-template-columns:1fr; gap:0; } }
   </style>
 </head>
@@ -827,32 +927,44 @@ HTML_TEMPLATE = """<!doctype html>
       <span id="account-dot" class="account-dot{% if not github_account %} off{% endif %}"></span>
       <span id="github-account-label">{% if github_account %}Conectado como <a href="https://github.com/{{ github_account }}" target="_blank" rel="noopener">@{{ github_account }}</a>{% else %}Nenhuma conta conectada{% endif %}</span>
       <button id="github-login" class="github-button" type="button">Conectar/trocar conta</button>
+      <button id="github-logout" class="danger-button" type="button"{% if not github_account %} hidden{% endif %}>Sair</button>
       <span id="github-login-status" class="github-login-status" hidden></span>
     </div>
   </header>
   <h1>Captura técnica de página</h1>
-  <p class=\"lead\">Gera PDF com a página integral paginada, anexos verificáveis e captura do player no tempo indicado em links do YouTube.</p>
+  <p class=\"lead\">Escolha o repositório de destino, gere a captura e acesse os PDFs preservados diretamente nesta página.</p>
+  <section class=\"card\">
+    <div class=\"panel-head\"><div><h2>Repositórios disponíveis</h2><p class=\"hint\">Repositórios aos quais a conta conectada tem acesso.</p></div><button id=\"refresh-repositories\" class=\"minor-button\" type=\"button\">Atualizar</button></div>
+    <div id=\"repository-list\" class=\"repository-list\"><p class=\"hint\">Conecte uma conta para listar os repositórios.</p></div>
+    <p id=\"selected-repository\" class=\"selected-repository\">Nenhum repositório selecionado.</p>
+    <button id=\"clear-repository\" class=\"minor-button\" type=\"button\" hidden>Limpar seleção</button>
+  </section>
+  <section id=\"documents-panel\" class=\"card\" hidden>
+    <div class=\"panel-head\"><div><h2>Documentos preservados</h2><p id=\"documents-note\" class=\"hint\"></p></div><a id=\"repository-link\" class=\"download\" target=\"_blank\" rel=\"noopener\">Abrir repositório</a></div>
+    <div id=\"document-list\" class=\"document-list\"></div>
+  </section>
   <form id=\"capture-form\" class=\"card\">
+    <input id=\"selected-repository-input\" name=\"repository\" type=\"hidden\"><input id=\"selected-branch-input\" name=\"branch\" type=\"hidden\">
     <label for=\"url\">Link da página</label>
     <input id=\"url\" name=\"url\" type=\"url\" placeholder=\"https://exemplo.com ou https://youtu.be/...?...\" required autofocus>
     <p class=\"hint\">Para YouTube, o tempo <code>?t=46m11s</code> ou <code>?t=2771</code> será aplicado e o vídeo será pausado nesse ponto.</p>
     <label for=\"label\">Nome opcional da captura</label>
     <input id=\"label\" name=\"label\" maxlength=\"70\" placeholder=\"Ex.: prova-video-audiencia\">
-    <div class=\"advanced\">
+    <div class=\"advanced\" hidden>
       <label class=\"toggle\"><input id=\"publish\" name=\"publish\" type=\"checkbox\"> Publicar os artefatos em um repositório público do GitHub</label>
       <p class=\"hint\">A senha/token não é gravada. Use a conta exibida no cabeçalho ou informe um token fine-grained com <em>Contents: Read and write</em>.</p>
       <div id=\"github-fields\" hidden>
         <div class=\"grid\">
-          <div><label for=\"repository\">Repositório público</label><input id=\"repository\" name=\"repository\" value=\"{{ github_repository }}\" placeholder=\"usuario/capturas-provas\"></div>
-          <div><label for=\"branch\">Branch</label><input id=\"branch\" name=\"branch\" value=\"main\"></div>
+          <div><label for=\"repository\">Repositório público</label><input id=\"repository\" name=\"legacy_repository\" value=\"{{ github_repository }}\" placeholder=\"usuario/capturas-provas\"></div>
+          <div><label for=\"branch\">Branch</label><input id=\"branch\" name=\"legacy_branch\" value=\"main\"></div>
         </div>
         <label for=\"github_token\">Token do GitHub (opcional)</label>
         <input id=\"github_token\" name=\"github_token\" type=\"password\" autocomplete=\"off\" placeholder=\"Deixe vazio para usar a conta conectada pelo GitHub CLI\">
       </div>
     </div>
-    <button id=\"submit\" type=\"submit\">Gerar captura em PDF</button>
+    <button id=\"submit\" type=\"submit\" disabled>Escolha um repositório para capturar</button>
   </form>
-  <p class=\"notice\">As capturas ficam em <code>capturas/</code>. Repositório público dá histórico e cópias externas, mas não substitui ata notarial nem divulgue dados sigilosos.</p>
+  <p class=\"notice\">A captura é gerada em área temporária e enviada ao repositório escolhido; ela não permanece salva automaticamente no computador. Baixe o PDF pela lista de documentos quando quiser.</p>
   <section id=\"result\" role=\"status\"></section>
 </main>
 <script>
@@ -892,6 +1004,30 @@ HTML_TEMPLATE = """<!doctype html>
     } catch (error) { result.textContent = error.message; result.className = 'error'; }
     finally { submit.disabled = false; submit.textContent = 'Gerar captura em PDF'; }
   });
+</script>
+<script>
+(() => {
+  const legacyForm = document.querySelector('#capture-form');
+  const form = legacyForm.cloneNode(true); legacyForm.replaceWith(form);
+  const githubButton = document.querySelector('#github-login'), githubLogout = document.querySelector('#github-logout'), githubLabel = document.querySelector('#github-account-label'), githubDot = document.querySelector('#account-dot'), githubStatus = document.querySelector('#github-login-status');
+  const repositoryList = document.querySelector('#repository-list'), selectedLabel = document.querySelector('#selected-repository'), clearButton = document.querySelector('#clear-repository'), repositoryInput = form.querySelector('#selected-repository-input'), branchInput = form.querySelector('#selected-branch-input');
+  const documentsPanel = document.querySelector('#documents-panel'), documentsNote = document.querySelector('#documents-note'), documentList = document.querySelector('#document-list'), repositoryLink = document.querySelector('#repository-link'), submit = form.querySelector('#submit'), result = document.querySelector('#result');
+  let repositories = [], selectedRepository = null;
+  function message(target, text) { target.replaceChildren(); const item = document.createElement('p'); item.className = 'hint'; item.textContent = text; target.append(item); }
+  async function api(url, options = {}) { const response = await fetch(url, options); const data = await response.json(); if (!response.ok) throw new Error(data.error || 'Não foi possível concluir a operação.'); return data; }
+  function showGithubAccount(state) { githubLabel.replaceChildren(); if (state.account) { githubDot.classList.remove('off'); githubLabel.append('Conectado como '); const link = document.createElement('a'); link.href = `https://github.com/${encodeURIComponent(state.account)}`; link.target = '_blank'; link.rel = 'noopener'; link.textContent = `@${state.account}`; githubLabel.append(link); githubLogout.hidden = false; } else { githubDot.classList.add('off'); githubLabel.textContent = 'Nenhuma conta conectada'; githubLogout.hidden = true; } }
+  function clearSelection() { selectedRepository = null; repositoryInput.value = ''; branchInput.value = ''; selectedLabel.textContent = 'Nenhum repositório selecionado.'; selectedLabel.classList.remove('active'); clearButton.hidden = true; documentsPanel.hidden = true; submit.disabled = true; submit.textContent = 'Escolha um repositório para capturar'; repositoryList.querySelectorAll('.repository').forEach(item => item.classList.remove('selected')); }
+  function renderRepositories() { repositoryList.replaceChildren(); if (!repositories.length) { message(repositoryList, 'Nenhum repositório disponível para esta conta.'); return; } repositories.forEach(repo => { const button = document.createElement('button'); button.type = 'button'; button.className = 'repository'; button.dataset.repository = repo.full_name; const details = document.createElement('span'); const name = document.createElement('span'); name.className = 'repo-name'; name.textContent = repo.full_name; const description = document.createElement('span'); description.className = 'repo-description'; description.textContent = repo.description || 'Sem descrição'; details.append(name, description); const visibility = document.createElement('span'); visibility.className = `visibility${repo.private ? ' private' : ''}`; visibility.textContent = repo.private ? 'Privado' : 'Público'; button.append(details, visibility); button.addEventListener('click', () => chooseRepository(repo)); repositoryList.append(button); }); }
+  async function loadRepositories() { message(repositoryList, 'Carregando repositórios…'); try { const data = await api('/api/github/repositories'); repositories = data.repositories; renderRepositories(); } catch (error) { message(repositoryList, error.message); } }
+  async function loadDocuments(repo) { documentsPanel.hidden = false; documentsNote.textContent = `Documentos em ${repo.full_name}`; repositoryLink.href = repo.html_url; message(documentList, 'Carregando documentos…'); try { const data = await api(`/api/github/documents?repository=${encodeURIComponent(repo.full_name)}`); documentList.replaceChildren(); if (!data.documents.length) { message(documentList, 'Ainda não há capturas neste repositório.'); return; } data.documents.forEach(document => { const row = document.createElement('div'); row.className = 'document'; const details = document.createElement('span'); details.textContent = 'Captura em PDF'; const metadata = document.createElement('small'); metadata.textContent = document.capture_id.replace('T', ' ').replace('Z', ' UTC'); details.append(metadata); const download = document.createElement('a'); download.className = 'download'; download.textContent = 'Baixar PDF'; download.href = `/api/github/documents/download?repository=${encodeURIComponent(repo.full_name)}&path=${encodeURIComponent(document.path)}`; row.append(details, download); documentList.append(row); }); } catch (error) { message(documentList, error.message); } }
+  function chooseRepository(repo) { selectedRepository = repo; repositoryInput.value = repo.full_name; branchInput.value = repo.default_branch; selectedLabel.textContent = `Repositório selecionado: ${repo.full_name}`; selectedLabel.classList.add('active'); clearButton.hidden = false; submit.disabled = false; submit.textContent = 'Gerar captura e guardar no GitHub'; repositoryList.querySelectorAll('.repository').forEach(item => item.classList.toggle('selected', item.dataset.repository === repo.full_name)); loadDocuments(repo); }
+  async function refreshGithubLogin() { const state = await api('/api/github/auth'); showGithubAccount(state); if (state.running) { githubStatus.hidden = false; githubStatus.textContent = state.device_code ? `${state.message} Código: ${state.device_code}` : state.message; window.setTimeout(refreshGithubLogin, 1800); } else { githubButton.disabled = false; if (!githubStatus.hidden) { githubStatus.textContent = state.message; window.setTimeout(() => { githubStatus.hidden = true; }, 6000); } if (state.account) loadRepositories(); } }
+  githubButton.addEventListener('click', async () => { githubButton.disabled = true; githubStatus.hidden = false; githubStatus.textContent = 'Iniciando autorização…'; try { await api('/api/github/login', {method:'POST'}); await refreshGithubLogin(); } catch (error) { githubStatus.textContent = error.message; githubButton.disabled = false; } });
+  githubLogout.addEventListener('click', async () => { if (!confirm('Sair da conta do GitHub neste aplicativo?')) return; try { await api('/api/github/logout', {method:'POST'}); showGithubAccount({account:''}); clearSelection(); repositories = []; message(repositoryList, 'Conecte uma conta para listar os repositórios.'); } catch (error) { alert(error.message); } });
+  document.querySelector('#refresh-repositories').addEventListener('click', loadRepositories); clearButton.addEventListener('click', clearSelection);
+  form.addEventListener('submit', async (event) => { event.preventDefault(); if (!selectedRepository) return; submit.disabled = true; submit.textContent = 'Gerando e enviando…'; result.className = ''; result.style.display = 'none'; try { const data = await api('/api/captures', {method:'POST', body:new FormData(form)}); result.replaceChildren(); const title = document.createElement('strong'); title.textContent = 'Captura concluída e preservada no GitHub.'; const link = document.createElement('a'); link.href = data.github_commit_url; link.target = '_blank'; link.rel = 'noopener'; link.textContent = 'Ver commit'; result.append(title, document.createElement('br'), link); result.className = 'ok'; await loadDocuments(selectedRepository); } catch (error) { result.textContent = error.message; result.className = 'error'; } finally { submit.disabled = false; submit.textContent = 'Gerar captura e guardar no GitHub'; } });
+  if (!githubDot.classList.contains('off')) loadRepositories();
+})();
 </script></body></html>"""
 
 
@@ -915,31 +1051,62 @@ def make_app(output_root: Path = DEFAULT_OUTPUT_DIR) -> Flask:
     def api_github_login():
         return jsonify(start_github_login())
 
+    @application.post("/api/github/logout")
+    def api_github_logout():
+        if github_cli_logout():
+            return jsonify(account="")
+        return jsonify(error="Não foi possível encerrar a sessão do GitHub."), 400
+
+    @application.get("/api/github/repositories")
+    def api_github_repositories():
+        try:
+            return jsonify(repositories=available_github_repositories())
+        except GitHubPublishError as error:
+            return jsonify(error=str(error)), 400
+
+    @application.get("/api/github/documents")
+    def api_github_documents():
+        try:
+            return jsonify(documents=github_documents(request.args.get("repository", "")))
+        except GitHubPublishError as error:
+            return jsonify(error=str(error)), 400
+
+    @application.get("/api/github/documents/download")
+    def api_github_document_download():
+        try:
+            repository = request.args.get("repository", "")
+            path = request.args.get("path", "")
+            data = github_document_bytes(repository, path)
+            capture_id = path.split("/")[1]
+            return send_file(
+                BytesIO(data),
+                mimetype="application/pdf",
+                as_attachment=True,
+                download_name=f"{capture_id}.pdf",
+            )
+        except GitHubPublishError as error:
+            return jsonify(error=str(error)), 400
+
     @application.post("/api/captures")
     def api_capture():
         if not CAPTURE_LOCK.acquire(blocking=False):
             return jsonify(error="Já há uma captura em andamento. Aguarde a conclusão."), 409
         try:
-            result = capture_url(
-                request.form.get("url", ""),
-                output_root,
-                request.form.get("label", ""),
-            )
-            if request.form.get("publish") == "on":
-                try:
-                    result.github_commit_url = publish_capture_to_github(
+            repository = github_repository_name(request.form.get("repository", ""))
+            with tempfile.TemporaryDirectory(prefix="pdf-printer-") as temporary_directory:
+                result = capture_url(
+                    request.form.get("url", ""),
+                    Path(temporary_directory),
+                    request.form.get("label", ""),
+                )
+                result.github_commit_url = publish_capture_to_github(
                         result,
-                        request.form.get("repository", ""),
+                        repository,
                         request.form.get("branch", DEFAULT_BRANCH),
-                        request.form.get("github_token", ""),
                     )
-                except GitHubPublishError as error:
-                    result.github_warning = str(error)
             return jsonify(
-                pdf_url=url_for("download_file", capture_id=result.capture_id, filename=result.pdf_path.name),
-                folder_url=url_for("list_files", capture_id=result.capture_id),
                 github_commit_url=result.github_commit_url,
-                github_warning=result.github_warning,
+                capture_id=result.capture_id,
             )
         except CaptureError as error:
             return jsonify(error=str(error)), 400
@@ -973,7 +1140,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--url", help="URL a capturar. Sem esta opção, inicia a interface local.")
     parser.add_argument("--name", default="", help="Nome opcional da captura.")
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR, help="Diretório das capturas.")
-    parser.add_argument("--repo", help="Repositório público para publicar, no formato usuario/repositorio.")
+    parser.add_argument("--repo", help="Repositório do GitHub para publicar, no formato usuario/repositorio.")
     parser.add_argument("--branch", default=DEFAULT_BRANCH, help="Branch do repositório (padrão: main).")
     parser.add_argument("--host", default="127.0.0.1", help="Host da interface local.")
     parser.add_argument("--port", type=int, default=8765, help="Porta da interface local.")
