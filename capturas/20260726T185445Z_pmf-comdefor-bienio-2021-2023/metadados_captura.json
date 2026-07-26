@@ -1,0 +1,18 @@
+{
+  "data_hora_captura_utc": "2026-07-26T18:54:45+00:00",
+  "ferramenta": "Python + Playwright + Chromium + ReportLab + pypdf",
+  "seletor_usado_na_captura_do_player": "viewport",
+  "sha256_html": "98fa61673f3c1ebe7964114716cea23317530803b809c03b47ef21d16429f048",
+  "sha256_imagem_integral": "6d5807f98a59a241efb47b98a5869893e190f9513fb7e4fa31f1ab3abafed968",
+  "sha256_imagem_player": "b8a12008f40f387ee23db4aa1e91a46cdae8d9e3a593a158ba8b48979e641a8b",
+  "sha256_pdf_base_antes_dos_anexos": "2ffabecccdd99ade22226f2af046918f38da1a15120f5154ec371458ffec4e24",
+  "status_http": 200,
+  "titulo_pagina": "Loading https://www.fortaleza.ce.gov.br/noticias/conselho-municipal-dos-direitos-da-pessoa-com-deficiencia-comdefor-aprova-reconducao-para-o-bienio-2022-2023?utm_source=chatgpt.com",
+  "url_final_acessada": "https://www.fortaleza.ce.gov.br/noticias/conselho-municipal-dos-direitos-da-pessoa-com-deficiencia-comdefor-aprova-reconducao-para-o-bienio-2022-2023?utm_source=chatgpt.com",
+  "url_informada": "https://www.fortaleza.ce.gov.br/noticias/conselho-municipal-dos-direitos-da-pessoa-com-deficiencia-comdefor-aprova-reconducao-para-o-bienio-2022-2023?utm_source=chatgpt.com",
+  "versao_formato": "1.0",
+  "youtube_posicao_capturada": "não informado",
+  "youtube_posicao_capturada_segundos": null,
+  "youtube_tempo_indicado": "não informado",
+  "youtube_tempo_indicado_segundos": null
+}
