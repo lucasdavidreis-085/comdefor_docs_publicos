@@ -1,0 +1,23 @@
+{
+  "arquivo_preservado": "20260726T220749Z_www-fortaleza-ce-gov-br.pdf",
+  "caminho_github": "20260726T220749Z_www-fortaleza-ce-gov-br.pdf",
+  "data_hora_captura_utc": "2026-07-26T22:07:49+00:00",
+  "ferramenta": "Python + Playwright + Chromium + ReportLab + pypdf",
+  "ramo_github": "main",
+  "registro_tipo": "Captura",
+  "repositorio_github": "lucasdavidreis-085/comdefor_docs_publicos",
+  "seletor_usado_na_captura_do_player": "viewport",
+  "sha256_html": "83b6b64e84d82c6c1918fc5ea5fa0d293eade8b4eccb0c974beba4e3507170b9",
+  "sha256_imagem_integral": "4a504243aa157e6bf816735a4a6cf0cf2e5f393080e237d0da25039d1cb4a820",
+  "sha256_imagem_player": "1d5eb850dcf2dcd81eee3ace28fcf1ffec2322eb91c47c09ddf60b81071025e1",
+  "sha256_pdf_base_antes_dos_anexos": "13431a0b30e36e789461a027f21e1d605782171b9474bba65fe514a0ce96c9d8",
+  "status_http": 200,
+  "titulo_pagina": "Organizações sociais podem se inscrever para Conselho Municipal dos Direitos da Pessoa com Deficiência até 10 de junho",
+  "url_final_acessada": "https://www.fortaleza.ce.gov.br/noticias/organizacoes-sociais-podem-se-inscrever-para-conselho-municipal-dos-direitos-da-pessoa-com-deficiencia-ate-10-de-junho?utm_source=chatgpt.com",
+  "url_informada": "https://www.fortaleza.ce.gov.br/noticias/organizacoes-sociais-podem-se-inscrever-para-conselho-municipal-dos-direitos-da-pessoa-com-deficiencia-ate-10-de-junho?utm_source=chatgpt.com",
+  "versao_formato": "1.0",
+  "youtube_posicao_capturada": "não informado",
+  "youtube_posicao_capturada_segundos": null,
+  "youtube_tempo_indicado": "não informado",
+  "youtube_tempo_indicado_segundos": null
+}
