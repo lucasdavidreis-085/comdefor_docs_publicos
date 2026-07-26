@@ -1,0 +1,23 @@
+{
+  "arquivo_preservado": "20260726T234440Z_agenciagov-ebc-com-br.pdf",
+  "caminho_github": "20260726T234440Z_agenciagov-ebc-com-br.pdf",
+  "data_hora_captura_utc": "2026-07-26T23:44:40+00:00",
+  "ferramenta": "Python + Playwright + Chromium + ReportLab + pypdf",
+  "ramo_github": "main",
+  "registro_tipo": "Captura",
+  "repositorio_github": "lucasdavidreis-085/comdefor_docs_publicos",
+  "seletor_usado_na_captura_do_player": "viewport",
+  "sha256_html": "14f056bf13b91ee82d6e972db5bc11a97b608c6625547797fe7b8bab828a610e",
+  "sha256_imagem_integral": "3e3e713ac62df40d4cb343923f6f6bc2429c1cfc9488073bbcd1f2e7e8ca1c22",
+  "sha256_imagem_player": "b2730e2e2cbc6efdfa36880ff3923c64f8005a8ef59d2f5d0e09449c59bf11c4",
+  "sha256_pdf_base_antes_dos_anexos": "2d3ebcdb2399d5842640c5931b8185fab5dddcfa2fd5ec910ed57ab1dbe384f9",
+  "status_http": 200,
+  "titulo_pagina": "EBC - Página temporariamente indisponível",
+  "url_final_acessada": "https://agenciagov.ebc.com.br/login?came_from=/noticias/202507/fortaleza-e-primeira-capital-a-oficializar-adesao-plano-nacional-dos-direitos-da-pessoa-com-deficiencia%3Futm_source%3Dchatgpt.com",
+  "url_informada": "https://agenciagov.ebc.com.br/login?came_from=/noticias/202507/fortaleza-e-primeira-capital-a-oficializar-adesao-plano-nacional-dos-direitos-da-pessoa-com-deficiencia%3Futm_source%3Dchatgpt.com",
+  "versao_formato": "1.0",
+  "youtube_posicao_capturada": "não informado",
+  "youtube_posicao_capturada_segundos": null,
+  "youtube_tempo_indicado": "não informado",
+  "youtube_tempo_indicado_segundos": null
+}
