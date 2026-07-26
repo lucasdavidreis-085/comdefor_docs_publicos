@@ -769,14 +769,20 @@ def github_documents(repository: str) -> list[dict[str, str]]:
         path = item.get("path", "")
         if item.get("type") == "blob" and re.fullmatch(r"capturas/[^/]+/captura_consolidada\.pdf", path):
             capture_id = path.split("/")[1]
-            documents.append({"capture_id": capture_id, "path": path})
-    return sorted(documents, key=lambda item: item["capture_id"], reverse=True)
+            documents.append({"entry_id": capture_id, "path": path, "name": "Captura em PDF", "kind": "Captura"})
+        elif item.get("type") == "blob" and re.fullmatch(r"documentos_enviados/[^/]+/[^/]+", path):
+            upload_id, filename = path.split("/")[1:]
+            if filename != "metadados_upload.json":
+                documents.append({"entry_id": upload_id, "path": path, "name": filename, "kind": "Arquivo enviado"})
+    return sorted(documents, key=lambda item: item["entry_id"], reverse=True)
 
 
 def github_document_bytes(repository: str, path: str) -> bytes:
     repository = github_repository_name(repository)
-    if not re.fullmatch(r"capturas/[^/]+/captura_consolidada\.pdf", path):
-        raise GitHubPublishError("O documento solicitado não é uma captura válida.")
+    is_capture = re.fullmatch(r"capturas/[^/]+/captura_consolidada\.pdf", path)
+    is_upload = re.fullmatch(r"documentos_enviados/[^/]+/[^/]+", path) and not path.endswith("/metadados_upload.json")
+    if not (is_capture or is_upload):
+        raise GitHubPublishError("O documento solicitado não é um arquivo válido.")
     token = github_cli_token()
     if not token:
         raise GitHubPublishError("Conecte uma conta do GitHub para baixar o documento.")
@@ -819,13 +825,14 @@ def connected_github_repository() -> str:
     return match.group(1) if match else ""
 
 
-def publish_capture_to_github(
-    result: CaptureResult,
+def publish_files_to_github(
     repository: str,
-    branch: str = DEFAULT_BRANCH,
+    branch: str,
+    files: list[tuple[str, bytes]],
+    message: str,
     token: str | None = None,
 ) -> str:
-    """Cria um único commit contendo todos os artefatos da captura em repositório público."""
+    """Cria um commit atômico com os arquivos informados no repositório escolhido."""
     repository = github_repository_name(repository)
     branch = branch.strip() or DEFAULT_BRANCH
     token = (token or os.environ.get("GITHUB_TOKEN") or github_cli_token()).strip()
@@ -835,34 +842,33 @@ def publish_capture_to_github(
             "defina GITHUB_TOKEN ou conecte-se com 'gh auth login'."
         )
 
-    repo_info = github_api_request("GET", f"/repos/{repository}", token)
+    github_api_request("GET", f"/repos/{repository}", token)
     ref_path = urllib.parse.quote(branch, safe="")
     ref = github_api_request("GET", f"/repos/{repository}/git/ref/heads/{ref_path}", token)
     parent_commit = ref["object"]["sha"]
     commit_info = github_api_request("GET", f"/repos/{repository}/git/commits/{parent_commit}", token)
     base_tree = commit_info["tree"]["sha"]
 
-    files = sorted(path for path in result.output_dir.iterdir() if path.is_file())
-    oversized = [path.name for path in files if path.stat().st_size > MAX_GITHUB_FILE_BYTES]
+    oversized = [path for path, data in files if len(data) > MAX_GITHUB_FILE_BYTES]
     if oversized:
         raise GitHubPublishError(
             "O GitHub não aceita um ou mais arquivos acima de 95 MiB: " + ", ".join(oversized)
         )
 
     tree_entries: list[dict[str, str]] = []
-    for file_path in files:
+    for file_path, data in files:
         blob = github_api_request(
             "POST",
             f"/repos/{repository}/git/blobs",
             token,
             {
-                "content": base64.b64encode(file_path.read_bytes()).decode("ascii"),
+                "content": base64.b64encode(data).decode("ascii"),
                 "encoding": "base64",
             },
         )
         tree_entries.append(
             {
-                "path": f"capturas/{result.capture_id}/{file_path.name}",
+                "path": file_path,
                 "mode": "100644",
                 "type": "blob",
                 "sha": blob["sha"],
@@ -875,13 +881,12 @@ def publish_capture_to_github(
         token,
         {"base_tree": base_tree, "tree": tree_entries},
     )
-    label = result.title or result.capture_id
     commit = github_api_request(
         "POST",
         f"/repos/{repository}/git/commits",
         token,
         {
-            "message": f"Preserva captura: {label[:100]}",
+            "message": message[:250],
             "tree": tree["sha"],
             "parents": [parent_commit],
         },
@@ -893,6 +898,77 @@ def publish_capture_to_github(
         {"sha": commit["sha"], "force": False},
     )
     return f"https://github.com/{repository}/commit/{commit['sha']}"
+
+
+def publish_capture_to_github(
+    result: CaptureResult,
+    repository: str,
+    branch: str = DEFAULT_BRANCH,
+    token: str | None = None,
+) -> str:
+    files = [
+        (f"capturas/{result.capture_id}/{file_path.name}", file_path.read_bytes())
+        for file_path in sorted(path for path in result.output_dir.iterdir() if path.is_file())
+    ]
+    label = result.title or result.capture_id
+    return publish_files_to_github(
+        repository,
+        branch,
+        files,
+        f"Preserva captura: {label}",
+        token,
+    )
+
+
+def safe_upload_filename(value: str) -> str:
+    name = Path(value).name.strip()
+    if not name or name in {".", ".."}:
+        raise GitHubPublishError("Escolha um arquivo com nome válido.")
+    stem = slugify(Path(name).stem, fallback="arquivo")
+    suffix = re.sub(r"[^A-Za-z0-9.]", "", Path(name).suffix)[:20]
+    return f"{stem}{suffix.lower()}"
+
+
+def publish_uploaded_file(
+    repository: str,
+    branch: str,
+    original_name: str,
+    content_type: str,
+    data: bytes,
+) -> str:
+    if not data:
+        raise GitHubPublishError("O arquivo selecionado está vazio.")
+    if len(data) > MAX_GITHUB_FILE_BYTES:
+        raise GitHubPublishError("O arquivo excede o limite de 95 MiB para envio ao GitHub.")
+    filename = safe_upload_filename(original_name)
+    now = datetime.now(timezone.utc)
+    repository = github_repository_name(repository)
+    branch = branch.strip() or DEFAULT_BRANCH
+    digest = sha256_bytes(data)
+    upload_id = f"{now.strftime('%Y%m%dT%H%M%SZ')}_{slugify(Path(filename).stem)}_{digest[:12]}"
+    base_path = f"documentos_enviados/{upload_id}"
+    metadata = {
+        "versao_formato": "1.0",
+        "nome_original": original_name,
+        "arquivo_preservado": filename,
+        "tipo_mime_informado": content_type or "application/octet-stream",
+        "tamanho_bytes": len(data),
+        "sha256_arquivo": digest,
+        "data_hora_upload_utc": now.isoformat(timespec="seconds"),
+        "origem": "Envio direto pelo PDF-printer",
+        "repositorio_github": repository,
+        "ramo_github": branch,
+        "caminho_github": f"{base_path}/{filename}",
+    }
+    return publish_files_to_github(
+        repository,
+        branch,
+        [
+            (f"{base_path}/{filename}", data),
+            (f"{base_path}/metadados_upload.json", json_bytes(metadata)),
+        ],
+        f"Preserva arquivo enviado: {filename}",
+    )
 
 
 HTML_TEMPLATE = """<!doctype html>
@@ -911,7 +987,7 @@ HTML_TEMPLATE = """<!doctype html>
     .grid { display:grid; grid-template-columns:2fr 1fr; gap:16px; } .advanced { margin-top:24px; padding-top:4px; border-top:1px solid var(--line); }
     .toggle { display:flex; gap:9px; align-items:center; font-weight:650; margin:18px 0 5px; } .toggle input { width:auto; accent-color:var(--accent); } .hint { margin:6px 0 0; color:var(--muted); font-size:.9rem; }
     button { margin-top:24px; border:0; border-radius:8px; color:white; background:var(--accent); padding:12px 18px; font:700 16px system-ui; cursor:pointer; } button[disabled] { cursor:wait; opacity:.65; }
-    #result { margin-top:24px; border-radius:10px; padding:15px 17px; display:none; } #result.ok { display:block; background:#e9f7ef; border:1px solid #a9dbba; } #result.error { display:block; color:#731722; background:#fff0f1; border:1px solid #f0b9be; } #result a { color:#0758a8; font-weight:650; }
+    #result,#upload-result { margin-top:18px; border-radius:10px; padding:15px 17px; display:none; } #result.ok,#upload-result.ok { display:block; background:#e9f7ef; border:1px solid #a9dbba; } #result.error,#upload-result.error { display:block; color:#731722; background:#fff0f1; border:1px solid #f0b9be; } #result a,#upload-result a { color:#0758a8; font-weight:650; }
     .notice { margin-top:24px; color:#4e5e70; font-size:.9rem; } code { background:#e9eef4; padding:2px 5px; border-radius:4px; }
     .danger-button { margin:0; padding:7px 10px; color:#ffb4b4; background:transparent; border:1px solid #6e3b3b; font-size:.8rem; } .panel-head { display:flex; align-items:center; justify-content:space-between; gap:12px; } .panel-head h2 { margin:0; font-size:1.05rem; } .minor-button { margin:0; padding:7px 10px; color:#253247; background:#e9eef5; font-size:.8rem; } .repository-list,.document-list { display:grid; gap:9px; margin-top:16px; max-height:310px; overflow:auto; padding-right:3px; } .repository { display:flex; align-items:center; justify-content:space-between; gap:12px; width:100%; margin:0; padding:11px 12px; color:var(--ink); background:#fff; border:1px solid var(--line); text-align:left; } .repository:hover,.repository.selected { border-color:var(--accent); background:#f0f7ff; } .repo-name { font-weight:750; } .repo-description { display:block; color:var(--muted); font-size:.82rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:560px; } .visibility { flex:0 0 auto; border-radius:99px; background:#ddf4ff; color:#0550ae; padding:2px 7px; font-size:.75rem; } .visibility.private { background:#fff1e5; color:#9a6700; } .selected-repository { margin:18px 0 0; padding:11px 12px; border-left:4px solid #8c959f; background:#f6f8fa; color:#4b5565; } .selected-repository.active { border-color:var(--accent); color:#172033; } .document { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:10px 0; border-bottom:1px solid #eaeef2; } .document:last-child { border-bottom:0; } .document small { display:block; color:var(--muted); } .download { color:#0550ae; font-weight:700; text-decoration:none; white-space:nowrap; }
     @media(max-width:600px) { main { margin:20px auto; } .github-header { align-items:flex-start; flex-direction:column; } .github-account { justify-content:flex-start; } .github-login-status { text-align:left; } .card { padding:20px; } .grid { grid-template-columns:1fr; gap:0; } }
@@ -964,6 +1040,15 @@ HTML_TEMPLATE = """<!doctype html>
     </div>
     <button id=\"submit\" type=\"submit\" disabled>Escolha um repositório para capturar</button>
   </form>
+  <form id=\"upload-form\" class=\"card\" enctype=\"multipart/form-data\">
+    <input id=\"upload-repository-input\" name=\"repository\" type=\"hidden\"><input id=\"upload-branch-input\" name=\"branch\" type=\"hidden\">
+    <h2>Enviar arquivo do computador</h2>
+    <p class=\"hint\">O arquivo original e um JSON com nome, tamanho, tipo, data e SHA-256 serão preservados no repositório selecionado.</p>
+    <label for=\"file\">Arquivo</label>
+    <input id=\"file\" name=\"file\" type=\"file\" required>
+    <button id=\"upload-submit\" type=\"submit\" disabled>Escolha um repositório para enviar</button>
+    <section id=\"upload-result\" role=\"status\"></section>
+  </form>
   <p class=\"notice\">A captura é gerada em área temporária e enviada ao repositório escolhido; ela não permanece salva automaticamente no computador. Baixe o PDF pela lista de documentos quando quiser.</p>
   <section id=\"result\" role=\"status\"></section>
 </main>
@@ -1012,20 +1097,22 @@ HTML_TEMPLATE = """<!doctype html>
   const githubButton = document.querySelector('#github-login'), githubLogout = document.querySelector('#github-logout'), githubLabel = document.querySelector('#github-account-label'), githubDot = document.querySelector('#account-dot'), githubStatus = document.querySelector('#github-login-status');
   const repositoryList = document.querySelector('#repository-list'), selectedLabel = document.querySelector('#selected-repository'), clearButton = document.querySelector('#clear-repository'), repositoryInput = form.querySelector('#selected-repository-input'), branchInput = form.querySelector('#selected-branch-input');
   const documentsPanel = document.querySelector('#documents-panel'), documentsNote = document.querySelector('#documents-note'), documentList = document.querySelector('#document-list'), repositoryLink = document.querySelector('#repository-link'), submit = form.querySelector('#submit'), result = document.querySelector('#result');
+  const uploadForm = document.querySelector('#upload-form'), uploadRepositoryInput = uploadForm.querySelector('#upload-repository-input'), uploadBranchInput = uploadForm.querySelector('#upload-branch-input'), uploadSubmit = uploadForm.querySelector('#upload-submit'), uploadResult = uploadForm.querySelector('#upload-result');
   let repositories = [], selectedRepository = null;
   function message(target, text) { target.replaceChildren(); const item = document.createElement('p'); item.className = 'hint'; item.textContent = text; target.append(item); }
   async function api(url, options = {}) { const response = await fetch(url, options); const data = await response.json(); if (!response.ok) throw new Error(data.error || 'Não foi possível concluir a operação.'); return data; }
   function showGithubAccount(state) { githubLabel.replaceChildren(); if (state.account) { githubDot.classList.remove('off'); githubLabel.append('Conectado como '); const link = document.createElement('a'); link.href = `https://github.com/${encodeURIComponent(state.account)}`; link.target = '_blank'; link.rel = 'noopener'; link.textContent = `@${state.account}`; githubLabel.append(link); githubLogout.hidden = false; } else { githubDot.classList.add('off'); githubLabel.textContent = 'Nenhuma conta conectada'; githubLogout.hidden = true; } }
-  function clearSelection() { selectedRepository = null; repositoryInput.value = ''; branchInput.value = ''; selectedLabel.textContent = 'Nenhum repositório selecionado.'; selectedLabel.classList.remove('active'); clearButton.hidden = true; documentsPanel.hidden = true; submit.disabled = true; submit.textContent = 'Escolha um repositório para capturar'; repositoryList.querySelectorAll('.repository').forEach(item => item.classList.remove('selected')); }
+  function clearSelection() { selectedRepository = null; repositoryInput.value = ''; branchInput.value = ''; uploadRepositoryInput.value = ''; uploadBranchInput.value = ''; selectedLabel.textContent = 'Nenhum repositório selecionado.'; selectedLabel.classList.remove('active'); clearButton.hidden = true; documentsPanel.hidden = true; submit.disabled = true; submit.textContent = 'Escolha um repositório para capturar'; uploadSubmit.disabled = true; uploadSubmit.textContent = 'Escolha um repositório para enviar'; repositoryList.querySelectorAll('.repository').forEach(item => item.classList.remove('selected')); }
   function renderRepositories() { repositoryList.replaceChildren(); if (!repositories.length) { message(repositoryList, 'Nenhum repositório disponível para esta conta.'); return; } repositories.forEach(repo => { const button = document.createElement('button'); button.type = 'button'; button.className = 'repository'; button.dataset.repository = repo.full_name; const details = document.createElement('span'); const name = document.createElement('span'); name.className = 'repo-name'; name.textContent = repo.full_name; const description = document.createElement('span'); description.className = 'repo-description'; description.textContent = repo.description || 'Sem descrição'; details.append(name, description); const visibility = document.createElement('span'); visibility.className = `visibility${repo.private ? ' private' : ''}`; visibility.textContent = repo.private ? 'Privado' : 'Público'; button.append(details, visibility); button.addEventListener('click', () => chooseRepository(repo)); repositoryList.append(button); }); }
   async function loadRepositories() { message(repositoryList, 'Carregando repositórios…'); try { const data = await api('/api/github/repositories'); repositories = data.repositories; renderRepositories(); } catch (error) { message(repositoryList, error.message); } }
-  async function loadDocuments(repo) { documentsPanel.hidden = false; documentsNote.textContent = `Documentos em ${repo.full_name}`; repositoryLink.href = repo.html_url; message(documentList, 'Carregando documentos…'); try { const data = await api(`/api/github/documents?repository=${encodeURIComponent(repo.full_name)}`); documentList.replaceChildren(); if (!data.documents.length) { message(documentList, 'Ainda não há capturas neste repositório.'); return; } data.documents.forEach(document => { const row = document.createElement('div'); row.className = 'document'; const details = document.createElement('span'); details.textContent = 'Captura em PDF'; const metadata = document.createElement('small'); metadata.textContent = document.capture_id.replace('T', ' ').replace('Z', ' UTC'); details.append(metadata); const download = document.createElement('a'); download.className = 'download'; download.textContent = 'Baixar PDF'; download.href = `/api/github/documents/download?repository=${encodeURIComponent(repo.full_name)}&path=${encodeURIComponent(document.path)}`; row.append(details, download); documentList.append(row); }); } catch (error) { message(documentList, error.message); } }
-  function chooseRepository(repo) { selectedRepository = repo; repositoryInput.value = repo.full_name; branchInput.value = repo.default_branch; selectedLabel.textContent = `Repositório selecionado: ${repo.full_name}`; selectedLabel.classList.add('active'); clearButton.hidden = false; submit.disabled = false; submit.textContent = 'Gerar captura e guardar no GitHub'; repositoryList.querySelectorAll('.repository').forEach(item => item.classList.toggle('selected', item.dataset.repository === repo.full_name)); loadDocuments(repo); }
+  async function loadDocuments(repo) { documentsPanel.hidden = false; documentsNote.textContent = `Documentos em ${repo.full_name}`; repositoryLink.href = repo.html_url; message(documentList, 'Carregando documentos…'); try { const data = await api(`/api/github/documents?repository=${encodeURIComponent(repo.full_name)}`); documentList.replaceChildren(); if (!data.documents.length) { message(documentList, 'Ainda não há documentos neste repositório.'); return; } data.documents.forEach(document => { const row = document.createElement('div'); row.className = 'document'; const details = document.createElement('span'); details.textContent = document.name; const metadata = document.createElement('small'); metadata.textContent = `${document.kind} - ${document.entry_id.replace('T', ' ').replace('Z', ' UTC')}`; details.append(metadata); const download = document.createElement('a'); download.className = 'download'; download.textContent = 'Baixar'; download.href = `/api/github/documents/download?repository=${encodeURIComponent(repo.full_name)}&path=${encodeURIComponent(document.path)}`; row.append(details, download); documentList.append(row); }); } catch (error) { message(documentList, error.message); } }
+  function chooseRepository(repo) { selectedRepository = repo; repositoryInput.value = repo.full_name; branchInput.value = repo.default_branch; uploadRepositoryInput.value = repo.full_name; uploadBranchInput.value = repo.default_branch; selectedLabel.textContent = `Repositório selecionado: ${repo.full_name}`; selectedLabel.classList.add('active'); clearButton.hidden = false; submit.disabled = false; submit.textContent = 'Gerar captura e guardar no GitHub'; uploadSubmit.disabled = false; uploadSubmit.textContent = 'Enviar arquivo ao GitHub'; repositoryList.querySelectorAll('.repository').forEach(item => item.classList.toggle('selected', item.dataset.repository === repo.full_name)); loadDocuments(repo); }
   async function refreshGithubLogin() { const state = await api('/api/github/auth'); showGithubAccount(state); if (state.running) { githubStatus.hidden = false; githubStatus.textContent = state.device_code ? `${state.message} Código: ${state.device_code}` : state.message; window.setTimeout(refreshGithubLogin, 1800); } else { githubButton.disabled = false; if (!githubStatus.hidden) { githubStatus.textContent = state.message; window.setTimeout(() => { githubStatus.hidden = true; }, 6000); } if (state.account) loadRepositories(); } }
   githubButton.addEventListener('click', async () => { githubButton.disabled = true; githubStatus.hidden = false; githubStatus.textContent = 'Iniciando autorização…'; try { await api('/api/github/login', {method:'POST'}); await refreshGithubLogin(); } catch (error) { githubStatus.textContent = error.message; githubButton.disabled = false; } });
   githubLogout.addEventListener('click', async () => { if (!confirm('Sair da conta do GitHub neste aplicativo?')) return; try { await api('/api/github/logout', {method:'POST'}); showGithubAccount({account:''}); clearSelection(); repositories = []; message(repositoryList, 'Conecte uma conta para listar os repositórios.'); } catch (error) { alert(error.message); } });
   document.querySelector('#refresh-repositories').addEventListener('click', loadRepositories); clearButton.addEventListener('click', clearSelection);
   form.addEventListener('submit', async (event) => { event.preventDefault(); if (!selectedRepository) return; submit.disabled = true; submit.textContent = 'Gerando e enviando…'; result.className = ''; result.style.display = 'none'; try { const data = await api('/api/captures', {method:'POST', body:new FormData(form)}); result.replaceChildren(); const title = document.createElement('strong'); title.textContent = 'Captura concluída e preservada no GitHub.'; const link = document.createElement('a'); link.href = data.github_commit_url; link.target = '_blank'; link.rel = 'noopener'; link.textContent = 'Ver commit'; result.append(title, document.createElement('br'), link); result.className = 'ok'; await loadDocuments(selectedRepository); } catch (error) { result.textContent = error.message; result.className = 'error'; } finally { submit.disabled = false; submit.textContent = 'Gerar captura e guardar no GitHub'; } });
+  uploadForm.addEventListener('submit', async (event) => { event.preventDefault(); if (!selectedRepository) return; const file = uploadForm.querySelector('#file').files[0]; if (!file) return; uploadSubmit.disabled = true; uploadSubmit.textContent = 'Enviando arquivo…'; uploadResult.className = ''; uploadResult.style.display = 'none'; try { const data = await api('/api/github/files', {method:'POST', body:new FormData(uploadForm)}); uploadResult.replaceChildren(); const title = document.createElement('strong'); title.textContent = 'Arquivo enviado e preservado no GitHub.'; const link = document.createElement('a'); link.href = data.github_commit_url; link.target = '_blank'; link.rel = 'noopener'; link.textContent = 'Ver commit'; uploadResult.append(title, document.createElement('br'), link); uploadResult.className = 'ok'; uploadForm.querySelector('#file').value = ''; await loadDocuments(selectedRepository); } catch (error) { uploadResult.textContent = error.message; uploadResult.className = 'error'; } finally { uploadSubmit.disabled = false; uploadSubmit.textContent = 'Enviar arquivo ao GitHub'; } });
   if (!githubDot.classList.contains('off')) loadRepositories();
 })();
 </script></body></html>"""
@@ -1034,6 +1121,11 @@ HTML_TEMPLATE = """<!doctype html>
 def make_app(output_root: Path = DEFAULT_OUTPUT_DIR) -> Flask:
     application = Flask(__name__)
     output_root = output_root.resolve()
+    application.config["MAX_CONTENT_LENGTH"] = 100 * 1024 * 1024
+
+    @application.errorhandler(413)
+    def upload_too_large(_error):
+        return jsonify(error="O arquivo excede o limite de 95 MiB para envio ao GitHub."), 413
 
     @application.get("/")
     def index() -> str:
@@ -1077,13 +1169,31 @@ def make_app(output_root: Path = DEFAULT_OUTPUT_DIR) -> Flask:
             repository = request.args.get("repository", "")
             path = request.args.get("path", "")
             data = github_document_bytes(repository, path)
-            capture_id = path.split("/")[1]
             return send_file(
                 BytesIO(data),
-                mimetype="application/pdf",
+                mimetype="application/octet-stream",
                 as_attachment=True,
-                download_name=f"{capture_id}.pdf",
+                download_name=Path(path).name,
             )
+        except GitHubPublishError as error:
+            return jsonify(error=str(error)), 400
+
+    @application.post("/api/github/files")
+    def api_github_file_upload():
+        try:
+            repository = github_repository_name(request.form.get("repository", ""))
+            uploaded_file = request.files.get("file")
+            if uploaded_file is None or not uploaded_file.filename:
+                raise GitHubPublishError("Escolha um arquivo para enviar.")
+            data = uploaded_file.read(MAX_GITHUB_FILE_BYTES + 1)
+            commit_url = publish_uploaded_file(
+                repository,
+                request.form.get("branch", DEFAULT_BRANCH),
+                uploaded_file.filename,
+                uploaded_file.mimetype,
+                data,
+            )
+            return jsonify(github_commit_url=commit_url)
         except GitHubPublishError as error:
             return jsonify(error=str(error)), 400
 

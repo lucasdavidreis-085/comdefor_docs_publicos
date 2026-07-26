@@ -1,5 +1,9 @@
 # PDF-printer
 
+## Envio de arquivos
+
+Escolha um repositório e envie qualquer arquivo do computador pela interface. O original fica em `documentos_enviados/` acompanhado de `metadados_upload.json`, com nome, tamanho, tipo MIME, data UTC, SHA-256, repositório, ramo e caminho no GitHub. Limite por arquivo: 95 MiB.
+
 Aplicativo local para capturar uma página web em PDF técnico e preservá-la no repositório GitHub escolhido. A saída inclui a página visual integral, uma captura do player de vídeo quando disponível, HTML, metadados e hashes SHA-256.
 
 ## Uso local
