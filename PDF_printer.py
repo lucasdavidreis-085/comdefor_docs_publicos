@@ -13,6 +13,7 @@ import json
 import math
 import os
 import re
+import subprocess
 import sys
 import threading
 import urllib.error
@@ -594,6 +595,41 @@ def github_api_request(
         raise GitHubPublishError(f"Não foi possível conectar ao GitHub: {error.reason}") from error
 
 
+def github_cli_token() -> str:
+    """Lê o token da sessão já autenticada no GitHub CLI, sem gravá-lo ou exibi-lo."""
+    try:
+        completed = subprocess.run(
+            ["gh", "auth", "token"],
+            capture_output=True,
+            check=True,
+            text=True,
+            timeout=10,
+        )
+        return completed.stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def connected_github_repository() -> str:
+    """Sugere o repositório remoto desta cópia do aplicativo, se houver um."""
+    configured = os.environ.get("PDF_PRINTER_GITHUB_REPOSITORY", "").strip()
+    if configured:
+        return configured
+    try:
+        completed = subprocess.run(
+            ["git", "config", "--get", "remote.origin.url"],
+            capture_output=True,
+            check=True,
+            text=True,
+            timeout=5,
+        )
+        remote = completed.stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    match = re.search(r"github\.com[/:]([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+?)(?:\.git)?$", remote)
+    return match.group(1) if match else ""
+
+
 def publish_capture_to_github(
     result: CaptureResult,
     repository: str,
@@ -605,11 +641,11 @@ def publish_capture_to_github(
     branch = branch.strip() or DEFAULT_BRANCH
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
         raise GitHubPublishError("Informe o repositório no formato proprietario/repositorio.")
-    token = (token or os.environ.get("GITHUB_TOKEN") or "").strip()
+    token = (token or os.environ.get("GITHUB_TOKEN") or github_cli_token()).strip()
     if not token:
         raise GitHubPublishError(
             "Informe um token do GitHub com permissão Contents: Read and write, "
-            "ou defina a variável de ambiente GITHUB_TOKEN."
+            "defina GITHUB_TOKEN ou conecte-se com 'gh auth login'."
         )
 
     repo_info = github_api_request("GET", f"/repos/{repository}", token)
@@ -709,11 +745,11 @@ HTML_TEMPLATE = """<!doctype html>
       <p class=\"hint\">A senha/token não é gravada. É necessário um token fine-grained com <em>Contents: Read and write</em> no repositório.</p>
       <div id=\"github-fields\" hidden>
         <div class=\"grid\">
-          <div><label for=\"repository\">Repositório público</label><input id=\"repository\" name=\"repository\" placeholder=\"usuario/capturas-provas\"></div>
+          <div><label for=\"repository\">Repositório público</label><input id=\"repository\" name=\"repository\" value=\"{{ github_repository }}\" placeholder=\"usuario/capturas-provas\"></div>
           <div><label for=\"branch\">Branch</label><input id=\"branch\" name=\"branch\" value=\"main\"></div>
         </div>
-        <label for=\"github_token\">Token do GitHub</label>
-        <input id=\"github_token\" name=\"github_token\" type=\"password\" autocomplete=\"off\" placeholder=\"Ou deixe vazio se GITHUB_TOKEN já estiver definido\">
+        <label for=\"github_token\">Token do GitHub (opcional)</label>
+        <input id=\"github_token\" name=\"github_token\" type=\"password\" autocomplete=\"off\" placeholder=\"Deixe vazio para usar a conta conectada pelo GitHub CLI\">
       </div>
     </div>
     <button id=\"submit\" type=\"submit\">Gerar captura em PDF</button>
@@ -747,7 +783,10 @@ def make_app(output_root: Path = DEFAULT_OUTPUT_DIR) -> Flask:
 
     @application.get("/")
     def index() -> str:
-        return render_template_string(HTML_TEMPLATE)
+        return render_template_string(
+            HTML_TEMPLATE,
+            github_repository=connected_github_repository(),
+        )
 
     @application.post("/api/captures")
     def api_capture():

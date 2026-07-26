@@ -23,7 +23,7 @@ Em links do YouTube, `t` e `start` são lidos tanto em segundos (`?t=2771`) como
 
 ## Preservação pública no GitHub
 
-Crie primeiro um repositório **público, não vazio** (por exemplo, com um README) e defina a branch `main`. Na interface, marque a opção de publicação, informe `proprietario/repositorio` e um [token fine-grained](https://github.com/settings/personal-access-tokens/new) com a permissão **Contents: Read and write** somente para esse repositório. O token não é salvo.
+Crie primeiro um repositório **público, não vazio** (por exemplo, com um README) e defina a branch `main`. Na interface, marque a opção de publicação e informe `proprietario/repositorio`. Se o [GitHub CLI](https://cli.github.com/) estiver conectado com `gh auth login`, a interface usa essa sessão automaticamente; não é preciso colar token. Alternativamente, use um token fine-grained com a permissão **Contents: Read and write** somente para esse repositório. Nenhum token é salvo.
 
 O aplicativo faz um único commit em `capturas/<id-da-captura>/`, contendo o PDF, HTML, imagens, metadados e `integridade.sha256`. O histórico público do GitHub oferece redundância e registro de versões, mas não equivale a uma ata notarial, assinatura digital qualificada ou carimbo oficial do tempo. Não publique conteúdo sigiloso, dados pessoais sem base legal ou material sem autorização.
 
