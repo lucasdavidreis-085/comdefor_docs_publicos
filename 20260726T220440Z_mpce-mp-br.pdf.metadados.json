@@ -1,0 +1,23 @@
+{
+  "arquivo_preservado": "20260726T220440Z_mpce-mp-br.pdf",
+  "caminho_github": "20260726T220440Z_mpce-mp-br.pdf",
+  "data_hora_captura_utc": "2026-07-26T22:04:40+00:00",
+  "ferramenta": "Python + Playwright + Chromium + ReportLab + pypdf",
+  "ramo_github": "main",
+  "registro_tipo": "Captura",
+  "repositorio_github": "lucasdavidreis-085/comdefor_docs_publicos",
+  "seletor_usado_na_captura_do_player": "viewport",
+  "sha256_html": "83f5d81c0c12758b91a1398e95b97915fce37527a0f674bb04903f79f53a761a",
+  "sha256_imagem_integral": "35873034707554606239b262ef20a43d88eb15c03494186f414aaf91e8e23058",
+  "sha256_imagem_player": "3c22bac58256fd4c9044eedd2abc79c7da19805cbadac5026136046d0ffc5acf",
+  "sha256_pdf_base_antes_dos_anexos": "f7e9f7d498438925aa6ca10af1e9cd9398e515741c2af09242b3f2cdc6fa4fc4",
+  "status_http": 200,
+  "titulo_pagina": "MP orienta que Prefeitura de Fortaleza realize nova eleição para o Conselho das Pessoas com Deficiência após inconsistências no último edital - MPCE",
+  "url_final_acessada": "https://mpce.mp.br/mp-orienta-que-prefeitura-de-fortaleza-realize-nova-eleicao-para-o-conselho-das-pessoas-com-deficiencia-apos-inconsistencias-no-ultimo-edital/?utm_source=chatgpt.com",
+  "url_informada": "https://mpce.mp.br/mp-orienta-que-prefeitura-de-fortaleza-realize-nova-eleicao-para-o-conselho-das-pessoas-com-deficiencia-apos-inconsistencias-no-ultimo-edital/?utm_source=chatgpt.com",
+  "versao_formato": "1.0",
+  "youtube_posicao_capturada": "não informado",
+  "youtube_posicao_capturada_segundos": null,
+  "youtube_tempo_indicado": "não informado",
+  "youtube_tempo_indicado_segundos": null
+}
