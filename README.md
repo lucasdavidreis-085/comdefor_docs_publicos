@@ -4,6 +4,8 @@
 
 Escolha um repositório e envie qualquer arquivo do computador pela interface. O original fica em `documentos_enviados/` acompanhado de `metadados_upload.json`, com nome, tamanho, tipo MIME, data UTC, SHA-256, repositório, ramo e caminho no GitHub. Limite por arquivo: 95 MiB.
 
+A interface também permite navegar pelas pastas do repositório, criar uma pasta, escolher a pasta de destino antes de capturar ou enviar, renomear arquivos e baixar um **Registro PDF**. Esse registro é gerado sob demanda e reúne o hash SHA-256 atual, dados do arquivo e a última alteração identificada no GitHub. Quando existirem, o JSON de metadados e o arquivo de integridade também ficam disponíveis para download separado.
+
 Aplicativo local para capturar uma página web em PDF técnico e preservá-la no repositório GitHub escolhido. A saída inclui a página visual integral, uma captura do player de vídeo quando disponível, HTML, metadados e hashes SHA-256.
 
 ## Uso local

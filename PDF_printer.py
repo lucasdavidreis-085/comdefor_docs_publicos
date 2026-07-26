@@ -905,9 +905,11 @@ def publish_capture_to_github(
     repository: str,
     branch: str = DEFAULT_BRANCH,
     token: str | None = None,
+    folder: str = "",
 ) -> str:
+    base_path = repository_join_path(folder, "capturas", result.capture_id)
     files = [
-        (f"capturas/{result.capture_id}/{file_path.name}", file_path.read_bytes())
+        (f"{base_path}/{file_path.name}", file_path.read_bytes())
         for file_path in sorted(path for path in result.output_dir.iterdir() if path.is_file())
     ]
     label = result.title or result.capture_id
@@ -935,6 +937,7 @@ def publish_uploaded_file(
     original_name: str,
     content_type: str,
     data: bytes,
+    folder: str = "",
 ) -> str:
     if not data:
         raise GitHubPublishError("O arquivo selecionado está vazio.")
@@ -946,7 +949,7 @@ def publish_uploaded_file(
     branch = branch.strip() or DEFAULT_BRANCH
     digest = sha256_bytes(data)
     upload_id = f"{now.strftime('%Y%m%dT%H%M%SZ')}_{slugify(Path(filename).stem)}_{digest[:12]}"
-    base_path = f"documentos_enviados/{upload_id}"
+    base_path = repository_join_path(folder, "documentos_enviados", upload_id)
     metadata = {
         "versao_formato": "1.0",
         "nome_original": original_name,
@@ -971,7 +974,392 @@ def publish_uploaded_file(
     )
 
 
-HTML_TEMPLATE = """<!doctype html>
+def normalize_repository_path(value: str, *, allow_root: bool = True) -> str:
+    """Normaliza um caminho relativo do repositório, sem aceitar travessia de diretórios."""
+    raw_path = value.strip().replace("\\", "/").strip("/")
+    if not raw_path:
+        if allow_root:
+            return ""
+        raise GitHubPublishError("Informe uma pasta ou arquivo válido.")
+    parts = raw_path.split("/")
+    if any(
+        not part
+        or part in {".", ".."}
+        or "\x00" in part
+        or any(ord(character) < 32 for character in part)
+        for part in parts
+    ):
+        raise GitHubPublishError("O caminho informado não é válido.")
+    return "/".join(parts)
+
+
+def repository_join_path(*parts: str) -> str:
+    return "/".join(
+        normalized
+        for part in parts
+        if (normalized := normalize_repository_path(part, allow_root=True))
+    )
+
+
+def repository_filename(value: str) -> str:
+    filename = value.strip()
+    if (
+        not filename
+        or filename in {".", ".."}
+        or "/" in filename
+        or "\\" in filename
+        or "\x00" in filename
+        or any(ord(character) < 32 for character in filename)
+    ):
+        raise GitHubPublishError("Informe um nome de arquivo válido.")
+    return filename[:180]
+
+
+def github_repository_tree(
+    repository: str,
+    branch: str = "",
+    token: str | None = None,
+) -> tuple[str, str, str, list[dict[str, Any]]]:
+    """Obtém a árvore completa do ramo usado pela interface."""
+    repository = github_repository_name(repository)
+    token = (token or github_cli_token()).strip()
+    if not token:
+        raise GitHubPublishError("Conecte uma conta do GitHub para acessar o repositório.")
+    repo_info = github_api_request("GET", f"/repos/{repository}", token)
+    selected_branch = branch.strip() or repo_info.get("default_branch") or DEFAULT_BRANCH
+    tree_ref = urllib.parse.quote(selected_branch, safe="")
+    tree = github_api_request(
+        "GET",
+        f"/repos/{repository}/git/trees/{tree_ref}?recursive=1",
+        token,
+    )
+    if tree.get("truncated"):
+        raise GitHubPublishError("O repositório tem arquivos demais para a listagem completa.")
+    entries = [entry for entry in tree.get("tree", []) if isinstance(entry, dict)]
+    return repository, selected_branch, token, entries
+
+
+def github_raw_file_bytes(repository: str, path: str, token: str) -> bytes:
+    path = normalize_repository_path(path, allow_root=False)
+    api_path = f"/repos/{repository}/contents/{urllib.parse.quote(path, safe='/')}"
+    request_object = urllib.request.Request(
+        f"https://api.github.com{api_path}",
+        headers={
+            "Accept": "application/vnd.github.raw+json",
+            "Authorization": f"Bearer {token}",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": "PDF-printer",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request_object, timeout=90) as response:
+            return response.read()
+    except urllib.error.HTTPError as error:
+        raise GitHubPublishError(f"GitHub respondeu HTTP {error.code} ao baixar o arquivo.") from error
+    except urllib.error.URLError as error:
+        raise GitHubPublishError(f"Não foi possível baixar o arquivo: {error.reason}") from error
+
+
+def record_support_paths(path: str, all_paths: set[str]) -> tuple[str, str, str]:
+    """Localiza metadados e hash associados aos registros produzidos pelo aplicativo."""
+    parent = path.rsplit("/", 1)[0] if "/" in path else ""
+    prefix = f"{parent}/" if parent else ""
+    capture_metadata = f"{prefix}metadados_captura.json"
+    upload_metadata = f"{prefix}metadados_upload.json"
+    integrity = f"{prefix}integridade.sha256"
+    if capture_metadata in all_paths:
+        return "Captura", capture_metadata, integrity if integrity in all_paths else ""
+    if upload_metadata in all_paths:
+        return "Arquivo enviado", upload_metadata, ""
+    return "Arquivo", "", ""
+
+
+def is_record_support_file(path: str, all_paths: set[str]) -> bool:
+    filename = path.rsplit("/", 1)[-1]
+    parent = path.rsplit("/", 1)[0] if "/" in path else ""
+    prefix = f"{parent}/" if parent else ""
+    is_record = (
+        f"{prefix}metadados_captura.json" in all_paths
+        or f"{prefix}metadados_upload.json" in all_paths
+    )
+    if filename == ".gitkeep":
+        return True
+    return is_record and filename in {
+        "metadados_captura.json",
+        "metadados_upload.json",
+        "integridade.sha256",
+        "pagina_original.html",
+        "pagina_integral.png",
+        "player_ou_viewport.png",
+    }
+
+
+def github_repository_contents(repository: str, folder: str = "") -> dict[str, Any]:
+    """Lista a pasta pedida e todas as pastas disponíveis para os campos de destino."""
+    folder = normalize_repository_path(folder, allow_root=True)
+    repository, branch, _token, entries = github_repository_tree(repository)
+    all_paths = {entry.get("path", "") for entry in entries if entry.get("path")}
+    prefix = f"{folder}/" if folder else ""
+    folders: dict[str, dict[str, str]] = {}
+    files: list[dict[str, Any]] = []
+    all_folders: set[str] = set()
+
+    for entry in entries:
+        path = entry.get("path", "")
+        if not path or not isinstance(path, str):
+            continue
+        components = path.split("/")
+        for index in range(1, len(components)):
+            all_folders.add("/".join(components[:index]))
+        if not path.startswith(prefix):
+            continue
+        remaining = path[len(prefix):]
+        if not remaining:
+            continue
+        if "/" in remaining:
+            name = remaining.split("/", 1)[0]
+            child_path = f"{prefix}{name}"
+            folders[child_path] = {"name": name, "path": child_path}
+            continue
+        if entry.get("type") != "blob" or is_record_support_file(path, all_paths):
+            continue
+        kind, metadata_path, integrity_path = record_support_paths(path, all_paths)
+        files.append(
+            {
+                "name": remaining,
+                "path": path,
+                "size": int(entry.get("size") or 0),
+                "kind": kind,
+                "metadata_path": metadata_path,
+                "integrity_path": integrity_path,
+            }
+        )
+
+    return {
+        "repository": repository,
+        "branch": branch,
+        "path": folder,
+        "parent": folder.rsplit("/", 1)[0] if "/" in folder else "",
+        "folders": sorted(folders.values(), key=lambda item: item["name"].lower()),
+        "all_folders": sorted(all_folders, key=str.lower),
+        "files": sorted(files, key=lambda item: item["name"].lower()),
+    }
+
+
+def github_document_bytes(repository: str, path: str) -> bytes:
+    repository = github_repository_name(repository)
+    path = normalize_repository_path(path, allow_root=False)
+    token = github_cli_token()
+    if not token:
+        raise GitHubPublishError("Conecte uma conta do GitHub para baixar o arquivo.")
+    return github_raw_file_bytes(repository, path, token)
+
+
+def github_commit_tree_entries(
+    repository: str,
+    branch: str,
+    tree_entries: list[dict[str, Any]],
+    message: str,
+    token: str | None = None,
+) -> str:
+    """Cria um único commit para alterações já representadas como entradas Git."""
+    repository = github_repository_name(repository)
+    token = (token or github_cli_token()).strip()
+    if not token:
+        raise GitHubPublishError("Conecte uma conta do GitHub para gravar no repositório.")
+    repo_info = github_api_request("GET", f"/repos/{repository}", token)
+    branch = branch.strip() or repo_info.get("default_branch") or DEFAULT_BRANCH
+    ref_path = urllib.parse.quote(branch, safe="")
+    ref = github_api_request("GET", f"/repos/{repository}/git/ref/heads/{ref_path}", token)
+    parent_commit = ref["object"]["sha"]
+    commit_info = github_api_request("GET", f"/repos/{repository}/git/commits/{parent_commit}", token)
+    tree = github_api_request(
+        "POST",
+        f"/repos/{repository}/git/trees",
+        token,
+        {"base_tree": commit_info["tree"]["sha"], "tree": tree_entries},
+    )
+    commit = github_api_request(
+        "POST",
+        f"/repos/{repository}/git/commits",
+        token,
+        {"message": message[:250], "tree": tree["sha"], "parents": [parent_commit]},
+    )
+    github_api_request(
+        "PATCH",
+        f"/repos/{repository}/git/refs/heads/{ref_path}",
+        token,
+        {"sha": commit["sha"], "force": False},
+    )
+    return f"https://github.com/{repository}/commit/{commit['sha']}"
+
+
+def create_github_blob(repository: str, data: bytes, token: str) -> str:
+    blob = github_api_request(
+        "POST",
+        f"/repos/{repository}/git/blobs",
+        token,
+        {"content": base64.b64encode(data).decode("ascii"), "encoding": "base64"},
+    )
+    return blob["sha"]
+
+
+def create_github_folder(repository: str, branch: str, folder: str) -> str:
+    folder = normalize_repository_path(folder, allow_root=False)
+    _repository, _branch, token, entries = github_repository_tree(repository, branch)
+    placeholder = f"{folder}/.gitkeep"
+    if any(
+        entry_path == folder or entry_path.startswith(f"{folder}/")
+        for entry in entries
+        if (entry_path := entry.get("path", ""))
+    ):
+        raise GitHubPublishError("Esta pasta já existe.")
+    return publish_files_to_github(
+        repository,
+        branch,
+        [(placeholder, b"")],
+        f"Cria pasta: {folder}",
+        token,
+    )
+
+
+def rename_github_file(repository: str, branch: str, path: str, new_name: str) -> str:
+    repository = github_repository_name(repository)
+    path = normalize_repository_path(path, allow_root=False)
+    new_name = repository_filename(new_name)
+    parent = path.rsplit("/", 1)[0] if "/" in path else ""
+    new_path = repository_join_path(parent, new_name)
+    if new_path == path:
+        return ""
+    _repository, resolved_branch, token, entries = github_repository_tree(repository, branch)
+    all_paths = {entry.get("path", "") for entry in entries if entry.get("path")}
+    source = next((entry for entry in entries if entry.get("path") == path and entry.get("type") == "blob"), None)
+    if source is None:
+        raise GitHubPublishError("O arquivo não foi encontrado no repositório.")
+    if new_path in all_paths:
+        raise GitHubPublishError("Já existe um arquivo com este nome nesta pasta.")
+    changes: list[dict[str, Any]] = [
+        {"path": new_path, "mode": source.get("mode") or "100644", "type": "blob", "sha": source["sha"]},
+        {"path": path, "mode": "100644", "type": "blob", "sha": None},
+    ]
+    _kind, metadata_path, _integrity_path = record_support_paths(path, all_paths)
+    if metadata_path:
+        try:
+            metadata = json.loads(github_raw_file_bytes(repository, metadata_path, token).decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            metadata = {}
+        if isinstance(metadata, dict):
+            now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            history = metadata.get("historico_alteracoes")
+            if not isinstance(history, list):
+                history = []
+            history.append({"data_hora_utc": now, "arquivo_anterior": path, "arquivo_atual": new_path})
+            metadata.update(
+                {
+                    "arquivo_preservado": new_name,
+                    "caminho_github": new_path,
+                    "data_hora_ultima_alteracao_utc": now,
+                    "historico_alteracoes": history[-20:],
+                }
+            )
+            changes.append(
+                {
+                    "path": metadata_path,
+                    "mode": "100644",
+                    "type": "blob",
+                    "sha": create_github_blob(repository, json_bytes(metadata), token),
+                }
+            )
+    return github_commit_tree_entries(
+        repository,
+        resolved_branch,
+        changes,
+        f"Renomeia arquivo: {Path(path).name} para {new_name}",
+        token,
+    )
+
+
+def github_last_change(repository: str, branch: str, path: str, token: str) -> dict[str, str]:
+    query = urllib.parse.urlencode({"sha": branch, "path": path, "per_page": 1})
+    commits = github_api_request("GET", f"/repos/{repository}/commits?{query}", token)
+    if not isinstance(commits, list) or not commits:
+        return {}
+    item = commits[0]
+    commit = item.get("commit") or {}
+    author = commit.get("author") or {}
+    return {
+        "data_hora_ultima_alteracao_utc": author.get("date") or "não informada",
+        "autor_ultima_alteracao": author.get("name") or "não informado",
+        "commit": item.get("sha") or "",
+        "url_commit": item.get("html_url") or "",
+    }
+
+
+def github_record_pdf(repository: str, path: str) -> bytes:
+    repository = github_repository_name(repository)
+    path = normalize_repository_path(path, allow_root=False)
+    _repository, branch, token, entries = github_repository_tree(repository)
+    all_paths = {entry.get("path", "") for entry in entries if entry.get("path")}
+    if path not in all_paths:
+        raise GitHubPublishError("O arquivo não foi encontrado no repositório.")
+    file_data = github_raw_file_bytes(repository, path, token)
+    kind, metadata_path, integrity_path = record_support_paths(path, all_paths)
+    metadata: dict[str, Any] = {}
+    if metadata_path:
+        try:
+            value = json.loads(github_raw_file_bytes(repository, metadata_path, token).decode("utf-8"))
+            metadata = value if isinstance(value, dict) else {}
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            metadata = {"leitura_metadados": "Não foi possível interpretar o JSON associado."}
+    last_change = github_last_change(repository, branch, path, token)
+    rows: list[tuple[str, str]] = [
+        ("Arquivo", Path(path).name),
+        ("Tipo de registro", kind),
+        ("Repositório", repository),
+        ("Ramo", branch),
+        ("Caminho no GitHub", path),
+        ("SHA-256 atual do arquivo", sha256_bytes(file_data)),
+        ("Tamanho atual", f"{len(file_data)} bytes"),
+        ("Registro PDF gerado em UTC", datetime.now(timezone.utc).isoformat(timespec="seconds")),
+    ]
+    for label, value in last_change.items():
+        if value:
+            rows.append((label.replace("_", " ").capitalize(), str(value)))
+    if integrity_path:
+        rows.append(("Arquivo de integridade", integrity_path))
+    for key in (
+        "data_hora_upload_utc",
+        "data_hora_captura_utc",
+        "data_hora_ultima_alteracao_utc",
+        "tipo_mime_informado",
+        "sha256_arquivo",
+        "url_informada",
+        "url_final_acessada",
+    ):
+        if metadata.get(key) not in {None, ""}:
+            rows.append((key.replace("_", " ").capitalize(), str(metadata[key])))
+
+    buffer = BytesIO()
+    pdf = canvas.Canvas(buffer, pagesize=A4)
+    page_width, page_height = A4
+    margin, y = 1.45 * cm, page_height - (1.45 * cm)
+    pdf.setFont("Helvetica-Bold", 13)
+    pdf.drawString(margin, y, "REGISTRO DE PRESERVAÇÃO NO GITHUB")
+    y -= 0.8 * cm
+    for label, value in rows:
+        lines = [f"{label}:"] + [f"  {line}" for line in _wrap_text(value, 96)] + [""]
+        for line in lines:
+            if y < 1.7 * cm:
+                pdf.showPage()
+                y = page_height - (1.45 * cm)
+            pdf.setFont("Helvetica-Bold" if line == f"{label}:" else "Helvetica", 8.6)
+            pdf.drawString(margin, y, line)
+            y -= 0.42 * cm
+    pdf.save()
+    return buffer.getvalue()
+
+
+LEGACY_HTML_TEMPLATE = """<!doctype html>
 <html lang=\"pt-BR\">
 <head>
   <meta charset=\"utf-8\">
@@ -1118,6 +1506,226 @@ HTML_TEMPLATE = """<!doctype html>
 </script></body></html>"""
 
 
+HTML_TEMPLATE = """<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PDF-printer</title>
+  <style>
+    :root { --ink:#172033; --muted:#647184; --line:#dce2e9; --accent:#0969da; --soft:#f6f8fa; --danger:#b42318; }
+    * { box-sizing:border-box; } body { margin:0; background:#fff; color:var(--ink); font:14px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif; }
+    a { color:#0758a8; } button,input,select { font:inherit; } button { cursor:pointer; }
+    .topbar { min-height:52px; padding:0 max(20px,calc((100% - 1120px)/2)); display:flex; align-items:center; justify-content:space-between; gap:18px; color:#f0f6fc; background:#24292f; }
+    .brand,.account { display:flex; align-items:center; gap:8px; } .brand { font-weight:760; font-size:15px; } .mark { width:22px; height:22px; fill:currentColor; } .account { flex-wrap:wrap; justify-content:flex-end; font-size:13px; color:#d0d7de; } .account a { color:#fff; font-weight:700; }
+    .dot { width:7px; height:7px; border-radius:50%; background:#3fb950; } .dot.off { background:#8c959f; } .topbar button { border:1px solid #57606a; color:#fff; background:transparent; padding:4px 8px; border-radius:3px; font-size:12px; } .topbar .logout { color:#ffb4b4; border-color:#6e3b3b; } #github-login-status { width:100%; text-align:right; color:#d0d7de; font-size:12px; }
+    main { width:min(1120px,calc(100% - 32px)); margin:24px auto 40px; } .app-grid { display:grid; grid-template-columns:215px minmax(0,1fr); gap:30px; }
+    aside { border-right:1px solid var(--line); padding-right:22px; min-height:560px; } .side-head { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:12px; } .side-head strong { font-size:12px; letter-spacing:.06em; } .text-button { border:0; padding:0; background:transparent; color:#0758a8; text-decoration:underline; font-size:12px; }
+    #repository-list { display:grid; gap:12px; } .repo { min-width:0; } .repo a { display:inline-block; color:#172033; font-weight:700; text-decoration:underline; text-underline-offset:3px; overflow-wrap:anywhere; } .repo a:hover { color:#0758a8; } .repo .active-repo { display:inline-block; color:#0758a8; font-weight:800; overflow-wrap:anywhere; } .repo small { display:block; margin-top:1px; color:var(--muted); font-size:12px; }
+    .workspace[hidden], .tab-panel[hidden] { display:none; } .workspace-head { display:flex; align-items:baseline; justify-content:space-between; gap:12px; padding-bottom:13px; border-bottom:1px solid var(--line); } .workspace-head strong { font-size:15px; } .workspace-head a { font-size:12px; }
+    .tabs { display:flex; gap:20px; border-bottom:1px solid var(--line); margin-bottom:18px; } .tab { margin:0; padding:11px 0 9px; color:var(--muted); background:transparent; border:0; border-bottom:2px solid transparent; font-weight:750; font-size:12px; letter-spacing:.03em; } .tab:hover { color:var(--ink); } .tab.active { color:#0758a8; border-color:#0969da; } .tab:disabled { opacity:.45; cursor:default; }
+    .tab-panel { max-width:760px; } .panel-row { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; } .panel-row h2 { margin:0; font-size:15px; } .hint { margin:4px 0 0; color:var(--muted); font-size:12px; } .breadcrumb { display:flex; flex-wrap:wrap; gap:5px; align-items:center; margin:13px 0; color:var(--muted); font-size:12px; } .breadcrumb a { color:#0758a8; } .folder-form { display:flex; gap:8px; margin:0 0 14px; } .folder-form input { min-width:0; flex:1; }
+    input,select { width:100%; padding:7px 8px; color:var(--ink); background:#fff; border:1px solid #aeb9c6; border-radius:3px; } input:focus,select:focus { outline:2px solid #b6d6fb; border-color:#0969da; } label { display:block; margin:14px 0 4px; font-size:12px; font-weight:700; } .form-action { margin-top:14px; padding:7px 10px; border:1px solid #0969da; border-radius:3px; color:#fff; background:#0969da; font-weight:700; } .form-action[disabled] { opacity:.6; cursor:wait; }
+    .list { border-top:1px solid var(--line); } .item { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:12px; min-height:38px; padding:7px 0; border-bottom:1px solid var(--line); } .item-main { min-width:0; } .item-main a { overflow-wrap:anywhere; } .item-meta { display:block; color:var(--muted); font-size:11px; } .folder-link { font-weight:700; } .actions { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:8px; font-size:12px; white-space:nowrap; } .actions a { text-decoration:underline; text-underline-offset:2px; }
+    .result { margin-top:14px; padding:8px 10px; border-left:3px solid #1a7f37; background:#f1f8f3; font-size:13px; } .result.error { border-color:var(--danger); color:#8a1c12; background:#fff4f2; } .result[hidden] { display:none; } .empty { margin:18px 0; color:var(--muted); }
+    @media(max-width:720px) { .topbar { padding:10px 16px; align-items:flex-start; flex-direction:column; } .account { justify-content:flex-start; } #github-login-status { text-align:left; } main { margin:18px auto; } .app-grid { grid-template-columns:1fr; gap:20px; } aside { min-height:0; border-right:0; border-bottom:1px solid var(--line); padding:0 0 18px; } #repository-list { grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); } .tabs { gap:14px; overflow:auto; } .item { grid-template-columns:1fr; gap:4px; } .actions { justify-content:flex-start; } }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><svg class="mark" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0a8 8 0 0 0-2.53 15.59c.4.07.55-.17.55-.38l-.01-1.49c-2.01.44-2.43-.85-2.43-.85-.33-.84-.8-1.06-.8-1.06-.55-.38.04-.37.04-.37.61.04.93.63.93.63.54.93 1.42.66 1.77.5.05-.4.21-.66.38-.81-1.61-.18-3.3-.81-3.3-3.59 0-.79.28-1.44.74-1.95-.07-.18-.32-.92.07-1.92 0 0 .6-.19 1.98.74A6.86 6.86 0 0 1 8 1.8c.61 0 1.23.08 1.81.24 1.37-.93 1.98-.74 1.98-.74.39 1 .14 1.74.07 1.92.46.51.74 1.16.74 1.95 0 2.79-1.7 3.4-3.31 3.58.21.18.39.52.39 1.05l-.01 1.55c0 .21.14.46.55.38A8 8 0 0 0 8 0Z"/></svg>GitHub</div>
+    <div class="account">
+      <span id="account-dot" class="dot{% if not github_account %} off{% endif %}"></span>
+      <span id="github-account-label">{% if github_account %}Conectado como <a href="https://github.com/{{ github_account }}" target="_blank" rel="noopener">@{{ github_account }}</a>{% else %}Nenhuma conta conectada{% endif %}</span>
+      <button id="github-login" type="button">Conectar/trocar conta</button>
+      <button id="github-logout" class="logout" type="button"{% if not github_account %} hidden{% endif %}>Sair</button>
+      <span id="github-login-status" hidden></span>
+    </div>
+  </header>
+  <main>
+    <div class="app-grid">
+      <aside>
+        <div class="side-head"><strong>REPOSITÓRIOS</strong><button id="refresh-repositories" class="text-button" type="button">Atualizar</button></div>
+        <div id="repository-list"><p class="hint">Conecte uma conta para listar os repositórios.</p></div>
+      </aside>
+      <section id="workspace" class="workspace" hidden>
+        <div class="workspace-head"><strong id="repository-name"></strong><a id="repository-link" target="_blank" rel="noopener">Abrir no GitHub</a></div>
+        <nav class="tabs" aria-label="Ações do repositório">
+          <button class="tab active" type="button" data-tab="files">ARQUIVOS E PASTAS</button>
+          <button class="tab" type="button" data-tab="capture">CAPTURAR PÁGINA</button>
+          <button class="tab" type="button" data-tab="upload">UPLOAD DE ARQUIVO</button>
+        </nav>
+        <section class="tab-panel" data-panel="files">
+          <div class="panel-row"><div><h2>Arquivos e pastas</h2><p class="hint">Use uma pasta para organizar as capturas e os envios.</p></div></div>
+          <div id="breadcrumb" class="breadcrumb"></div>
+          <form id="folder-form" class="folder-form"><input id="new-folder" maxlength="160" placeholder="Nome da nova subpasta" required><button class="form-action" type="submit">Criar pasta</button></form>
+          <div id="file-list" class="list"></div>
+          <section id="files-result" class="result" hidden></section>
+        </section>
+        <section class="tab-panel" data-panel="capture" hidden>
+          <div class="panel-row"><div><h2>Capturar página</h2><p class="hint">A captura é processada em área temporária e preservada no repositório.</p></div></div>
+          <form id="capture-form">
+            <input id="capture-repository" name="repository" type="hidden"><input id="capture-branch" name="branch" type="hidden">
+            <label for="capture-folder">Pasta de destino</label><select id="capture-folder" name="folder"></select>
+            <label for="url">Link da página</label><input id="url" name="url" type="url" placeholder="https://exemplo.com ou https://youtu.be/...?... " required autofocus>
+            <p class="hint">Em links do YouTube, o tempo indicado em <code>?t=46m11s</code> ou <code>?t=2771</code> será aplicado antes da captura.</p>
+            <label for="label">Nome da captura</label><input id="label" name="label" maxlength="70" placeholder="Ex.: prova-video-audiencia">
+            <button id="capture-submit" class="form-action" type="submit">Gerar PDF e guardar no GitHub</button>
+          </form>
+          <section id="capture-result" class="result" hidden></section>
+        </section>
+        <section class="tab-panel" data-panel="upload" hidden>
+          <div class="panel-row"><div><h2>Upload de arquivo</h2><p class="hint">O original permanece acompanhado de JSON, SHA-256 e registro técnico para download.</p></div></div>
+          <form id="upload-form" enctype="multipart/form-data">
+            <input id="upload-repository" name="repository" type="hidden"><input id="upload-branch" name="branch" type="hidden">
+            <label for="upload-folder">Pasta de destino</label><select id="upload-folder" name="folder"></select>
+            <label for="file">Arquivo</label><input id="file" name="file" type="file" required>
+            <button id="upload-submit" class="form-action" type="submit">Enviar arquivo ao GitHub</button>
+          </form>
+          <section id="upload-result" class="result" hidden></section>
+        </section>
+      </section>
+    </div>
+  </main>
+<script>
+(() => {
+  const repositoryList = document.querySelector('#repository-list');
+  const workspace = document.querySelector('#workspace');
+  const repositoryName = document.querySelector('#repository-name');
+  const repositoryLink = document.querySelector('#repository-link');
+  const fileList = document.querySelector('#file-list');
+  const breadcrumb = document.querySelector('#breadcrumb');
+  const folderForm = document.querySelector('#folder-form');
+  const newFolder = document.querySelector('#new-folder');
+  const captureForm = document.querySelector('#capture-form');
+  const uploadForm = document.querySelector('#upload-form');
+  const captureFolder = document.querySelector('#capture-folder');
+  const uploadFolder = document.querySelector('#upload-folder');
+  const captureSubmit = document.querySelector('#capture-submit');
+  const uploadSubmit = document.querySelector('#upload-submit');
+  const githubButton = document.querySelector('#github-login');
+  const githubLogout = document.querySelector('#github-logout');
+  const githubLabel = document.querySelector('#github-account-label');
+  const githubDot = document.querySelector('#account-dot');
+  const githubStatus = document.querySelector('#github-login-status');
+  const tabs = Array.from(document.querySelectorAll('.tab'));
+  const panels = Array.from(document.querySelectorAll('.tab-panel'));
+  let repositories = [], selectedRepository = null, currentPath = '', folderPaths = [];
+
+  function api(url, options) { return fetch(url, options || {}).then(async response => { const data = await response.json(); if (!response.ok) throw new Error(data.error || 'Não foi possível concluir a operação.'); return data; }); }
+  function showResult(target, message, error) { target.replaceChildren(); target.textContent = message; target.classList.toggle('error', Boolean(error)); target.hidden = false; }
+  function resetResult(target) { target.hidden = true; target.classList.remove('error'); target.replaceChildren(); }
+  function link(text, href, className) { const item = document.createElement('a'); item.textContent = text; item.href = href; if (className) item.className = className; return item; }
+  function query(path) { return '/api/github/documents/download?repository=' + encodeURIComponent(selectedRepository.full_name) + '&path=' + encodeURIComponent(path); }
+  function recordPdf(path) { return '/api/github/records/pdf?repository=' + encodeURIComponent(selectedRepository.full_name) + '&path=' + encodeURIComponent(path); }
+  function setTab(tabName) { tabs.forEach(tab => tab.classList.toggle('active', tab.dataset.tab === tabName)); panels.forEach(panel => panel.hidden = panel.dataset.panel !== tabName); }
+  function addText(target, text, className) { const item = document.createElement('span'); item.textContent = text; if (className) item.className = className; target.append(item); return item; }
+
+  function showGithubAccount(state) {
+    githubLabel.replaceChildren();
+    if (state.account) {
+      githubDot.classList.remove('off'); addText(githubLabel, 'Conectado como ');
+      const account = link('@' + state.account, 'https://github.com/' + encodeURIComponent(state.account)); account.target = '_blank'; account.rel = 'noopener'; githubLabel.append(account); githubLogout.hidden = false;
+    } else { githubDot.classList.add('off'); githubLabel.textContent = 'Nenhuma conta conectada'; githubLogout.hidden = true; }
+  }
+  async function refreshGithubLogin() {
+    try {
+      const state = await api('/api/github/auth'); showGithubAccount(state);
+      if (state.running) { githubStatus.hidden = false; githubStatus.textContent = state.device_code ? state.message + ' Código: ' + state.device_code : state.message; window.setTimeout(refreshGithubLogin, 1800); }
+      else { githubButton.disabled = false; if (!githubStatus.hidden) { githubStatus.textContent = state.message || ''; window.setTimeout(() => { githubStatus.hidden = true; }, 5000); } if (state.account) loadRepositories(); }
+    } catch (_) {}
+  }
+
+  function renderRepositories() {
+    repositoryList.replaceChildren();
+    if (!repositories.length) { const message = document.createElement('p'); message.className = 'hint'; message.textContent = 'Nenhum repositório disponível.'; repositoryList.append(message); return; }
+    repositories.forEach(repo => {
+      const row = document.createElement('div'); row.className = 'repo';
+      const shortName = '/' + repo.full_name.split('/').slice(-1)[0];
+      if (selectedRepository && selectedRepository.full_name === repo.full_name) addText(row, shortName, 'active-repo');
+      else { const choice = link(shortName, '#'); choice.addEventListener('click', event => { event.preventDefault(); chooseRepository(repo); }); row.append(choice); }
+      const visibility = document.createElement('small'); visibility.textContent = repo.private ? 'Privado' : 'Público'; row.append(visibility); repositoryList.append(row);
+    });
+  }
+  async function loadRepositories() {
+    repositoryList.replaceChildren(); const loading = document.createElement('p'); loading.className = 'hint'; loading.textContent = 'Carregando…'; repositoryList.append(loading);
+    try { const data = await api('/api/github/repositories'); repositories = data.repositories; renderRepositories(); } catch (error) { loading.textContent = error.message; }
+  }
+  function fillFolderOptions(paths) {
+    const values = ['', ...paths];
+    [captureFolder, uploadFolder].forEach(select => {
+      const previous = select.value;
+      select.replaceChildren();
+      values.forEach(path => { const option = document.createElement('option'); option.value = path; option.textContent = path ? '/' + path : 'Raiz do repositório'; select.append(option); });
+      select.value = values.includes(previous) ? previous : '';
+    });
+  }
+  function renderBreadcrumb(path) {
+    breadcrumb.replaceChildren();
+    const root = link('Raiz', '#'); root.addEventListener('click', event => { event.preventDefault(); loadContents(''); }); breadcrumb.append(root);
+    let built = '';
+    path.split('/').filter(Boolean).forEach(part => { addText(breadcrumb, '/'); built = built ? built + '/' + part : part; const itemPath = built; const item = link(part, '#'); item.addEventListener('click', event => { event.preventDefault(); loadContents(itemPath); }); breadcrumb.append(item); });
+  }
+  function renderFiles(data) {
+    fileList.replaceChildren(); renderBreadcrumb(data.path);
+    data.folders.forEach(folder => {
+      const row = document.createElement('div'); row.className = 'item'; const main = document.createElement('div'); main.className = 'item-main';
+      const folderLink = link('▸ ' + folder.name, '#', 'folder-link'); folderLink.addEventListener('click', event => { event.preventDefault(); loadContents(folder.path); }); main.append(folderLink); const meta = document.createElement('span'); meta.className = 'item-meta'; meta.textContent = 'Pasta'; main.append(meta); row.append(main); fileList.append(row);
+    });
+    data.files.forEach(file => {
+      const row = document.createElement('div'); row.className = 'item'; const main = document.createElement('div'); main.className = 'item-main'; const name = link(file.name, query(file.path)); name.setAttribute('download', ''); main.append(name);
+      const meta = document.createElement('span'); meta.className = 'item-meta'; meta.textContent = file.kind + ' · ' + file.size + ' bytes'; main.append(meta);
+      const actions = document.createElement('div'); actions.className = 'actions';
+      actions.append(link('Baixar', query(file.path))); actions.append(link('Registro PDF', recordPdf(file.path)));
+      if (file.metadata_path) actions.append(link('JSON', query(file.metadata_path)));
+      if (file.integrity_path) actions.append(link('Hash', query(file.integrity_path)));
+      const rename = link('Renomear', '#'); rename.addEventListener('click', event => { event.preventDefault(); renameFile(file); }); actions.append(rename);
+      row.append(main, actions); fileList.append(row);
+    });
+    if (!data.folders.length && !data.files.length) { const empty = document.createElement('p'); empty.className = 'empty'; empty.textContent = 'Esta pasta está vazia.'; fileList.append(empty); }
+  }
+  async function loadContents(path) {
+    if (!selectedRepository) return;
+    fileList.replaceChildren(); const loading = document.createElement('p'); loading.className = 'empty'; loading.textContent = 'Carregando…'; fileList.append(loading);
+    try { const data = await api('/api/github/contents?repository=' + encodeURIComponent(selectedRepository.full_name) + '&path=' + encodeURIComponent(path || '')); currentPath = data.path; folderPaths = data.all_folders; fillFolderOptions(folderPaths); renderFiles(data); }
+    catch (error) { loading.textContent = error.message; }
+  }
+  function chooseRepository(repo) {
+    selectedRepository = repo; workspace.hidden = false; repositoryName.textContent = repo.full_name; repositoryLink.href = repo.html_url;
+    captureForm.querySelector('#capture-repository').value = repo.full_name; captureForm.querySelector('#capture-branch').value = repo.default_branch;
+    uploadForm.querySelector('#upload-repository').value = repo.full_name; uploadForm.querySelector('#upload-branch').value = repo.default_branch;
+    folderPaths = []; fillFolderOptions(folderPaths); renderRepositories(); setTab('files'); loadContents('');
+  }
+  async function renameFile(file) {
+    const name = window.prompt('Novo nome para "' + file.name + '":', file.name); if (name === null || name.trim() === '' || name === file.name) return;
+    try { const data = await api('/api/github/files/rename', { method:'POST', body:new URLSearchParams({repository:selectedRepository.full_name, branch:selectedRepository.default_branch, path:file.path, name:name.trim()}) }); showResult(document.querySelector('#files-result'), data.github_commit_url ? 'Arquivo renomeado no GitHub.' : 'O nome já era o mesmo.'); loadContents(currentPath); }
+    catch (error) { showResult(document.querySelector('#files-result'), error.message, true); }
+  }
+  folderForm.addEventListener('submit', async event => {
+    event.preventDefault(); const name = newFolder.value.trim(); if (!name || !selectedRepository) return; const path = currentPath ? currentPath + '/' + name : name; const button = folderForm.querySelector('button'); button.disabled = true;
+    try { await api('/api/github/folders', { method:'POST', body:new URLSearchParams({repository:selectedRepository.full_name, branch:selectedRepository.default_branch, folder:path}) }); newFolder.value = ''; showResult(document.querySelector('#files-result'), 'Pasta criada no GitHub.'); await loadContents(currentPath); }
+    catch (error) { showResult(document.querySelector('#files-result'), error.message, true); } finally { button.disabled = false; }
+  });
+  captureForm.addEventListener('submit', async event => {
+    event.preventDefault(); if (!selectedRepository) return; resetResult(document.querySelector('#capture-result')); captureSubmit.disabled = true; captureSubmit.textContent = 'Gerando e enviando…';
+    try { const data = await api('/api/captures', {method:'POST', body:new FormData(captureForm)}); showResult(document.querySelector('#capture-result'), 'Captura concluída e preservada no GitHub.'); const commit = link(' Ver commit', data.github_commit_url); commit.target = '_blank'; commit.rel = 'noopener'; document.querySelector('#capture-result').append(commit); await loadContents(currentPath); }
+    catch (error) { showResult(document.querySelector('#capture-result'), error.message, true); } finally { captureSubmit.disabled = false; captureSubmit.textContent = 'Gerar PDF e guardar no GitHub'; }
+  });
+  uploadForm.addEventListener('submit', async event => {
+    event.preventDefault(); if (!selectedRepository || !uploadForm.querySelector('#file').files[0]) return; resetResult(document.querySelector('#upload-result')); uploadSubmit.disabled = true; uploadSubmit.textContent = 'Enviando…';
+    try { const data = await api('/api/github/files', {method:'POST', body:new FormData(uploadForm)}); showResult(document.querySelector('#upload-result'), 'Arquivo preservado no GitHub.'); const commit = link(' Ver commit', data.github_commit_url); commit.target = '_blank'; commit.rel = 'noopener'; document.querySelector('#upload-result').append(commit); uploadForm.querySelector('#file').value = ''; await loadContents(currentPath); }
+    catch (error) { showResult(document.querySelector('#upload-result'), error.message, true); } finally { uploadSubmit.disabled = false; uploadSubmit.textContent = 'Enviar arquivo ao GitHub'; }
+  });
+  tabs.forEach(tab => tab.addEventListener('click', () => { if (selectedRepository) setTab(tab.dataset.tab); }));
+  document.querySelector('#refresh-repositories').addEventListener('click', loadRepositories);
+  githubButton.addEventListener('click', async () => { githubButton.disabled = true; githubStatus.hidden = false; githubStatus.textContent = 'Iniciando autorização…'; try { await api('/api/github/login', {method:'POST'}); refreshGithubLogin(); } catch (error) { githubStatus.textContent = error.message; githubButton.disabled = false; } });
+  githubLogout.addEventListener('click', async () => { if (!window.confirm('Sair da conta do GitHub neste aplicativo?')) return; try { await api('/api/github/logout', {method:'POST'}); showGithubAccount({account:''}); selectedRepository = null; workspace.hidden = true; repositories = []; renderRepositories(); } catch (error) { window.alert(error.message); } });
+  if (!githubDot.classList.contains('off')) loadRepositories();
+})();
+</script>
+</body></html>"""
+
+
 def make_app(output_root: Path = DEFAULT_OUTPUT_DIR) -> Flask:
     application = Flask(__name__)
     output_root = output_root.resolve()
@@ -1163,6 +1771,18 @@ def make_app(output_root: Path = DEFAULT_OUTPUT_DIR) -> Flask:
         except GitHubPublishError as error:
             return jsonify(error=str(error)), 400
 
+    @application.get("/api/github/contents")
+    def api_github_contents():
+        try:
+            return jsonify(
+                github_repository_contents(
+                    request.args.get("repository", ""),
+                    request.args.get("path", ""),
+                )
+            )
+        except GitHubPublishError as error:
+            return jsonify(error=str(error)), 400
+
     @application.get("/api/github/documents/download")
     def api_github_document_download():
         try:
@@ -1175,6 +1795,45 @@ def make_app(output_root: Path = DEFAULT_OUTPUT_DIR) -> Flask:
                 as_attachment=True,
                 download_name=Path(path).name,
             )
+        except GitHubPublishError as error:
+            return jsonify(error=str(error)), 400
+
+    @application.get("/api/github/records/pdf")
+    def api_github_record_pdf():
+        try:
+            path = request.args.get("path", "")
+            data = github_record_pdf(request.args.get("repository", ""), path)
+            return send_file(
+                BytesIO(data),
+                mimetype="application/pdf",
+                as_attachment=True,
+                download_name=f"registro_{slugify(Path(path).stem, fallback='arquivo')}.pdf",
+            )
+        except GitHubPublishError as error:
+            return jsonify(error=str(error)), 400
+
+    @application.post("/api/github/folders")
+    def api_github_folder_create():
+        try:
+            commit_url = create_github_folder(
+                request.form.get("repository", ""),
+                request.form.get("branch", DEFAULT_BRANCH),
+                request.form.get("folder", ""),
+            )
+            return jsonify(github_commit_url=commit_url)
+        except GitHubPublishError as error:
+            return jsonify(error=str(error)), 400
+
+    @application.post("/api/github/files/rename")
+    def api_github_file_rename():
+        try:
+            commit_url = rename_github_file(
+                request.form.get("repository", ""),
+                request.form.get("branch", DEFAULT_BRANCH),
+                request.form.get("path", ""),
+                request.form.get("name", ""),
+            )
+            return jsonify(github_commit_url=commit_url)
         except GitHubPublishError as error:
             return jsonify(error=str(error)), 400
 
@@ -1192,6 +1851,7 @@ def make_app(output_root: Path = DEFAULT_OUTPUT_DIR) -> Flask:
                 uploaded_file.filename,
                 uploaded_file.mimetype,
                 data,
+                request.form.get("folder", ""),
             )
             return jsonify(github_commit_url=commit_url)
         except GitHubPublishError as error:
@@ -1213,6 +1873,7 @@ def make_app(output_root: Path = DEFAULT_OUTPUT_DIR) -> Flask:
                         result,
                         repository,
                         request.form.get("branch", DEFAULT_BRANCH),
+                        folder=request.form.get("folder", ""),
                     )
             return jsonify(
                 github_commit_url=result.github_commit_url,
