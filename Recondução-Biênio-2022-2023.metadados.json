@@ -1,8 +1,16 @@
 {
-  "arquivo_preservado": "20260726T211611Z_recondu-o-bi-nio-2022-2023.pdf",
-  "caminho_github": "20260726T211611Z_recondu-o-bi-nio-2022-2023.pdf",
+  "arquivo_preservado": "Recondução-Biênio-2022-2023",
+  "caminho_github": "Recondução-Biênio-2022-2023",
   "data_hora_captura_utc": "2026-07-26T21:16:11+00:00",
+  "data_hora_ultima_alteracao_utc": "2026-07-26T21:18:05+00:00",
   "ferramenta": "Python + Playwright + Chromium + ReportLab + pypdf",
+  "historico_alteracoes": [
+    {
+      "arquivo_anterior": "20260726T211611Z_recondu-o-bi-nio-2022-2023.pdf",
+      "arquivo_atual": "Recondução-Biênio-2022-2023",
+      "data_hora_utc": "2026-07-26T21:18:05+00:00"
+    }
+  ],
   "ramo_github": "main",
   "registro_tipo": "Captura",
   "repositorio_github": "lucasdavidreis-085/comdefor_docs_publicos",
