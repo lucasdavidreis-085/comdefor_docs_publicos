@@ -1,0 +1,23 @@
+{
+  "arquivo_preservado": "20260726T212015Z_mpce-mp-br.pdf",
+  "caminho_github": "20260726T212015Z_mpce-mp-br.pdf",
+  "data_hora_captura_utc": "2026-07-26T21:20:15+00:00",
+  "ferramenta": "Python + Playwright + Chromium + ReportLab + pypdf",
+  "ramo_github": "main",
+  "registro_tipo": "Captura",
+  "repositorio_github": "lucasdavidreis-085/comdefor_docs_publicos",
+  "seletor_usado_na_captura_do_player": "viewport",
+  "sha256_html": "f64d615bcad64d184a83eacde4c3201f9fca383edc7eda778d0aa33957511aee",
+  "sha256_imagem_integral": "036e437c58807397743715e413afa58abfb16cdf0c2d18cc6a8116e9d6878011",
+  "sha256_imagem_player": "3dd3ddb7b761d02a867cd851fa22d8909c103eae0bd6006795f427db5b51ff01",
+  "sha256_pdf_base_antes_dos_anexos": "926f1c99db25ce1bdc409a1e9e7bdf449f4872e2edf5b972c7f097a8c02ade35",
+  "status_http": 200,
+  "titulo_pagina": "MP recomenda eleição e melhora no Conselho da Pessoa com Deficiência",
+  "url_final_acessada": "https://mpce.mp.br/mp-do-ceara-recomenda-realizacao-de-eleicao-de-representantes-e-regular-funcionamento-do-conselho-municipal-da-pessoa-com-deficiencia-de-fortaleza/?utm_source=chatgpt.com",
+  "url_informada": "https://mpce.mp.br/mp-do-ceara-recomenda-realizacao-de-eleicao-de-representantes-e-regular-funcionamento-do-conselho-municipal-da-pessoa-com-deficiencia-de-fortaleza/?utm_source=chatgpt.com",
+  "versao_formato": "1.0",
+  "youtube_posicao_capturada": "não informado",
+  "youtube_posicao_capturada_segundos": null,
+  "youtube_tempo_indicado": "não informado",
+  "youtube_tempo_indicado_segundos": null
+}
