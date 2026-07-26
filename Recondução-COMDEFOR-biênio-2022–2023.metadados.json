@@ -1,8 +1,16 @@
 {
-  "arquivo_preservado": "20260726T204242Z_recondu-o-comdefor-bi-nio-2022-2023.pdf",
-  "caminho_github": "20260726T204242Z_recondu-o-comdefor-bi-nio-2022-2023.pdf",
+  "arquivo_preservado": "Recondução-COMDEFOR-biênio-2022–2023",
+  "caminho_github": "Recondução-COMDEFOR-biênio-2022–2023",
   "data_hora_captura_utc": "2026-07-26T20:42:42+00:00",
+  "data_hora_ultima_alteracao_utc": "2026-07-26T20:44:10+00:00",
   "ferramenta": "Python + Playwright + Chromium + ReportLab + pypdf",
+  "historico_alteracoes": [
+    {
+      "arquivo_anterior": "20260726T204242Z_recondu-o-comdefor-bi-nio-2022-2023.pdf",
+      "arquivo_atual": "Recondução-COMDEFOR-biênio-2022–2023",
+      "data_hora_utc": "2026-07-26T20:44:10+00:00"
+    }
+  ],
   "ramo_github": "main",
   "registro_tipo": "Captura",
   "repositorio_github": "lucasdavidreis-085/comdefor_docs_publicos",
