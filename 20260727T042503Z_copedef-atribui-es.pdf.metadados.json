@@ -1,0 +1,23 @@
+{
+  "arquivo_preservado": "20260727T042503Z_copedef-atribui-es.pdf",
+  "caminho_github": "20260727T042503Z_copedef-atribui-es.pdf",
+  "data_hora_captura_utc": "2026-07-27T04:25:03+00:00",
+  "ferramenta": "Python + Playwright + Chromium + ReportLab + pypdf",
+  "ramo_github": "main",
+  "registro_tipo": "Captura",
+  "repositorio_github": "lucasdavidreis-085/comdefor_docs_publicos",
+  "seletor_usado_na_captura_do_player": "viewport",
+  "sha256_html": "eae2ce245d6da24312422f7bd07db152ecc9f813578239521ea36f9e43b1d6d4",
+  "sha256_imagem_integral": "79ec33ceb4d40cde34c59e0e7351b4cbf183de628104a3e886c49b70067e7735",
+  "sha256_imagem_player": "73452d3a46c7121f0351b34c4035658efebf8b4b87ed40998db2d672a2a07de4",
+  "sha256_pdf_base_antes_dos_anexos": "40b2e316deb4e66c5d8b8ad21bfe4e983084dbf9f0a650883249067ee6b169e7",
+  "status_http": 200,
+  "titulo_pagina": "Canal Desenvolvimento Social - Prefeitura Municipal de Fortaleza",
+  "url_final_acessada": "https://desenvolvimentosocial.fortaleza.ce.gov.br/institucional/organograma/22-competencias/79-copedef-competencias",
+  "url_informada": "https://desenvolvimentosocial.fortaleza.ce.gov.br/institucional/organograma/22-competencias/79-copedef-competencias",
+  "versao_formato": "1.0",
+  "youtube_posicao_capturada": "não informado",
+  "youtube_posicao_capturada_segundos": null,
+  "youtube_tempo_indicado": "não informado",
+  "youtube_tempo_indicado_segundos": null
+}
