@@ -1,0 +1,23 @@
+{
+  "arquivo_preservado": "20260728T051538Z_drive-google-com.pdf",
+  "caminho_github": "20260728T051538Z_drive-google-com.pdf",
+  "data_hora_captura_utc": "2026-07-28T05:15:38+00:00",
+  "ferramenta": "Python + Playwright + Chromium + ReportLab + pypdf",
+  "ramo_github": "main",
+  "registro_tipo": "Captura",
+  "repositorio_github": "lucasdavidreis-085/comdefor_docs_publicos",
+  "seletor_usado_na_captura_do_player": "viewport",
+  "sha256_html": "09ad8c87fa7bf73a64b515bf13218ee7061e960b92153b249ead230a95dec17f",
+  "sha256_imagem_integral": "c5e7484407f9a9bcb74aa1e9fbdc6bc5041412dd5df6b85e32cbd4ebc7c9dcf7",
+  "sha256_imagem_player": "c5e7484407f9a9bcb74aa1e9fbdc6bc5041412dd5df6b85e32cbd4ebc7c9dcf7",
+  "sha256_pdf_base_antes_dos_anexos": "4f210209c438fd20761e787738ceb0e7460d4e35fb9ec7f29569f792875755bd",
+  "status_http": 200,
+  "titulo_pagina": "ATAS - Google Drive",
+  "url_final_acessada": "https://drive.google.com/drive/folders/1yx30RjZkkfB3TQyagkPzTHTwKT6-YXoU",
+  "url_informada": "https://drive.google.com/drive/folders/1yx30RjZkkfB3TQyagkPzTHTwKT6-YXoU",
+  "versao_formato": "1.0",
+  "youtube_posicao_capturada": "não informado",
+  "youtube_posicao_capturada_segundos": null,
+  "youtube_tempo_indicado": "não informado",
+  "youtube_tempo_indicado_segundos": null
+}
