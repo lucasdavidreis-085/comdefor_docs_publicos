@@ -1,0 +1,23 @@
+{
+  "arquivo_preservado": "20260728T052908Z_desenvolvimentosocial-fortaleza-ce-gov-br.pdf",
+  "caminho_github": "20260728T052908Z_desenvolvimentosocial-fortaleza-ce-gov-br.pdf",
+  "data_hora_captura_utc": "2026-07-28T05:29:08+00:00",
+  "ferramenta": "Python + Playwright + Chromium + ReportLab + pypdf",
+  "ramo_github": "main",
+  "registro_tipo": "Captura",
+  "repositorio_github": "lucasdavidreis-085/comdefor_docs_publicos",
+  "seletor_usado_na_captura_do_player": "viewport",
+  "sha256_html": "a69c6ad90994f270210f0f0f8068b0ac6c1e5cb6eb031905826f31709707c2e9",
+  "sha256_imagem_integral": "9a0c55b4324dbf757cf0c278df462f49232fa46b536a369239a30adabe2ddd26",
+  "sha256_imagem_player": "fcf4dafe91c3e443c3bce865b537481c5bd3a26b1071baf2aecd60e9c47de1d1",
+  "sha256_pdf_base_antes_dos_anexos": "8bc8def88faa6dc0d116f514e3b3ebb1cccb05d09f2281d9ac840a482e98e51a",
+  "status_http": 200,
+  "titulo_pagina": "Canal Desenvolvimento Social - Prefeitura Municipal de Fortaleza",
+  "url_final_acessada": "https://desenvolvimentosocial.fortaleza.ce.gov.br/menu-conselhos",
+  "url_informada": "https://desenvolvimentosocial.fortaleza.ce.gov.br/menu-conselhos",
+  "versao_formato": "1.0",
+  "youtube_posicao_capturada": "não informado",
+  "youtube_posicao_capturada_segundos": null,
+  "youtube_tempo_indicado": "não informado",
+  "youtube_tempo_indicado_segundos": null
+}
