@@ -1,0 +1,23 @@
+{
+  "arquivo_preservado": "20260728T053521Z_drive-google-com.pdf",
+  "caminho_github": "20260728T053521Z_drive-google-com.pdf",
+  "data_hora_captura_utc": "2026-07-28T05:35:21+00:00",
+  "ferramenta": "Python + Playwright + Chromium + ReportLab + pypdf",
+  "ramo_github": "main",
+  "registro_tipo": "Captura",
+  "repositorio_github": "lucasdavidreis-085/comdefor_docs_publicos",
+  "seletor_usado_na_captura_do_player": "viewport",
+  "sha256_html": "e4fa3a91fcf186b758331ed71ac38f35c31c3d14b630b9aef4751658aa8fa3a0",
+  "sha256_imagem_integral": "b41324645677e393ff7f4575ef21fbf1a0dbb1270f928a9064e55dc52ba9c008",
+  "sha256_imagem_player": "b41324645677e393ff7f4575ef21fbf1a0dbb1270f928a9064e55dc52ba9c008",
+  "sha256_pdf_base_antes_dos_anexos": "a95c0478fa871f0822af358c3eb546247774123998bdfac5d02ca545f11698d3",
+  "status_http": 200,
+  "titulo_pagina": "DOCUMENTOS COMDEFOR - Google Drive",
+  "url_final_acessada": "https://drive.google.com/drive/folders/1wG5TF9WAHPRss95mYcfvwaefb8-W0EHj",
+  "url_informada": "https://drive.google.com/drive/folders/1wG5TF9WAHPRss95mYcfvwaefb8-W0EHj",
+  "versao_formato": "1.0",
+  "youtube_posicao_capturada": "não informado",
+  "youtube_posicao_capturada_segundos": null,
+  "youtube_tempo_indicado": "não informado",
+  "youtube_tempo_indicado_segundos": null
+}
